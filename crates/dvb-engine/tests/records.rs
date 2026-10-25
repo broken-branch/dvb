@@ -761,6 +761,7 @@ async fn no_ci_removes_required_checks_and_a_failed_ruleset_update_is_not_saved(
         "install_ruleset",
         dvb_core::forge::ForgeError {
             retryable: false,
+            unreachable: false,
             rate_limit: None,
             detail: "offline failure".into(),
         },

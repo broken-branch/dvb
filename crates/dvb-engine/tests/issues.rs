@@ -377,6 +377,7 @@ async fn run_verbs_read_trusted_issues_and_refuse_untrusted_ones() {
         ForgeError {
             rate_limit: None,
             retryable: true,
+            unreachable: false,
             detail: "GitHub HTTP 502".into(),
         },
     );
@@ -539,6 +540,7 @@ async fn goal_text_mentions_bring_trusted_issue_text_to_the_orchestrator_only() 
         ForgeError {
             rate_limit: None,
             retryable: true,
+            unreachable: false,
             detail: "GitHub HTTP 502".into(),
         },
     );

@@ -395,6 +395,7 @@ mod tests {
             EventKind::GoalApproved { goal },
             state("held", TaskState::Planned, stopped()),
             EventKind::TaskStopped {
+                update: false,
                 task: TaskId::new("held"),
                 reason: Some("not before Monday".into()),
             },

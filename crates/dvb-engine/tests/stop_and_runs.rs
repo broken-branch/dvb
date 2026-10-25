@@ -573,7 +573,7 @@ fn a_crashed_runs_cause_is_on_its_end_and_its_task_says_it_retries() {
 }
 
 #[test]
-fn a_crashed_last_attempt_names_its_cause_and_scrubbed_stderr_on_its_end_and_failure() {
+fn a_crashed_last_attempt_names_its_cause_and_clean_stderr_on_its_end_and_failure() {
     let dir = tempfile::tempdir().unwrap();
     let mut kinds = Vec::new();
     for n in 1..=3 {
@@ -611,9 +611,9 @@ fn a_crashed_last_attempt_names_its_cause_and_scrubbed_stderr_on_its_end_and_fai
         .map(|n| format!("{n}: {}", "x".repeat(60)))
         .collect();
     stderr.extend([
-        format!("auth: {token}"),
+        format!("auth: ghp_\u{1b}[31m{}\u{1b}[0m", &token[4..]),
         String::new(),
-        "error: No space left on device (os error 28)".into(),
+        "\u{1b}[31merror: No space left on device (os error 28)\u{1b}[0m".into(),
     ]);
     std::fs::write(run_dir.join("stderr"), stderr.join("\n")).unwrap();
     e.end_run(&RunId::new("b3"), EndReason::Crashed, None)

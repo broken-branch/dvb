@@ -366,6 +366,9 @@ pub fn event_text(kind: &EventKind, time: impl Fn(Timestamp) -> String) -> Optio
         | ProjectBriefSet { .. }
         | ProjectRulesetMissing {}
         | ProjectRulesetInstalled {}
+        | ProjectRepoChanged { .. }
+        | ProjectRepoUnreachable { .. }
+        | ProjectRemoved { .. }
         | RoleAdded(_)
         | RoleRemoved(_)
         | HireAdded(_)

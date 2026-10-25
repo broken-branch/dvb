@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.67"
+version = "0.1.68"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/broken-branch/dvb"
@@ -27,3 +27,8 @@ redundant_closure_for_method_calls = "deny"
 disallowed_methods = "deny"
 # The strict command keeps this advisory via --force-warn clippy::too_many_lines.
 too_many_lines = "warn"
+
+# Unoptimized, the generated schema of all event kinds is one stack frame of
+# over 1 MiB, and building the owner router in a test overflows its 2 MiB thread.
+[profile.dev.package.dvb-core]
+opt-level = 1

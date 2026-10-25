@@ -2,6 +2,7 @@ import { routes } from '@/lib/routes';
 import { TextDisclosure } from '@/components/dvb/text-disclosure';
 import { mirrorObservation, stateLabels, word } from '@/lib/data/display';
 import { useEffect, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import { ListPlus, Pause, Play, Plus } from 'lucide-react';
 import { Card } from '@/components/dvb/card';
 import { Heading, Status, PageTabs, Meter } from '@/components/dvb/common';
@@ -24,6 +25,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Input } from '@/components/ui/input';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { go, useStore } from '@/lib/store';
 import type { Goal, Project, Question } from '@/lib/data/types';
 import { currentGoals, projectGoal, lastGoalText } from '@/lib/data/selectors';
@@ -379,6 +381,7 @@ export function ProjectPage({ id, tab = 'board' }: { id: string; tab?: string })
                   <p>Default branch: {p.default_branch}</p>
                 </Card>
                 <Autonomy name={p.name} />
+                <RemoveProject project={p} />
               </div>
             ),
           },
@@ -418,6 +421,71 @@ function Autonomy({ name }: { name: string }) {
         merge-anyway and scope changes still come to you.
       </p>
       <DataError message={action.error} />
+    </Card>
+  );
+}
+/** Removes the project from this install after one confirm that names it. */
+function RemoveProject({ project }: { project: Project }) {
+  const { data: s, canWrite } = useStore(),
+    action = useAction(),
+    opener = useRef<HTMLButtonElement>(null),
+    [confirming, setConfirming] = useState(false);
+  return (
+    <Card>
+      <h2>Remove project</h2>
+      <p>
+        dvb stops tracking this project and frees its files on this computer. Nothing changes on
+        GitHub. A project with running or open tasks cannot be removed.
+      </p>
+      <div className="actions">
+        <Button
+          ref={opener}
+          variant="outline"
+          disabled={!canWrite}
+          onClick={() => setConfirming(true)}
+        >
+          Remove
+        </Button>
+      </div>
+      <Dialog open={confirming} onOpenChange={setConfirming}>
+        <DialogContent
+          aria-describedby="remove-project"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            opener.current?.focus();
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>Remove {project.name}?</DialogTitle>
+          </DialogHeader>
+          <p id="remove-project">
+            {project.name} ({project.repo}) leaves dvb on this computer. Its earlier activity stays
+            in the record and nothing changes on GitHub.
+          </p>
+          <DataError message={action.error} />
+          <div className="actions">
+            <Button
+              disabled={action.busy || !canWrite}
+              onClick={() =>
+                void action.act(
+                  () => s.removeProject(project.id),
+                  (removal) => {
+                    toast.success(word('project.removed', removal.project));
+                    if (removal.not_freed.length)
+                      toast.error(`Not freed: ${removal.not_freed.join('; ')}`);
+                    go(routes.home());
+                  },
+                )
+              }
+            >
+              Remove {project.name}
+            </Button>
+            <Button variant="ghost" onClick={() => setConfirming(false)}>
+              Cancel
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

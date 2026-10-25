@@ -446,6 +446,16 @@ event_kinds! {
         ProjectRulesetMissing => "project.ruleset_missing" {},
         /// A project that had no ruleset got dvb's when its checks were set.
         ProjectRulesetInstalled => "project.ruleset_installed" {},
+        /// The owner pointed the project at its repository's new name, checked
+        /// to be the same repository; earlier events keep the name they had.
+        ProjectRepoChanged => "project.repo_changed" { from: String, to: String },
+        /// GitHub gave no token for the project's repository by its saved name
+        /// (HTTP 422). Recorded once, until a mirror write succeeds or the
+        /// project is repointed.
+        ProjectRepoUnreachable => "project.repo_unreachable" { repo: String },
+        /// The owner removed the project from this install: it leaves every
+        /// view and takes no goal. Its earlier events stay; GitHub is untouched.
+        ProjectRemoved => "project.removed" { name: String, repo: String },
 
         RoleAdded => "role.added"(RoleRecord),
         /// `restored_from`: the earlier event whose value this restores.
@@ -571,6 +581,9 @@ event_kinds! {
         TaskStopped => "task.stopped" {
             task: TaskId,
             reason: Option<String>,
+            /// Resume this stop once after update handover or rollback.
+            #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+            update: bool,
         },
         TaskResumed => "task.resumed" {
             task: TaskId,
@@ -850,6 +863,9 @@ impl EventKind {
             | Self::ProjectIssuesFound(..)
             | Self::ProjectRulesetMissing { .. }
             | Self::ProjectRulesetInstalled { .. }
+            | Self::ProjectRepoChanged { .. }
+            | Self::ProjectRepoUnreachable { .. }
+            | Self::ProjectRemoved { .. }
             | Self::RoleAdded(..)
             | Self::RoleChanged { .. }
             | Self::RoleRemoved(..)
@@ -900,6 +916,9 @@ impl EventKind {
             | Self::ProjectIssuesFound(..)
             | Self::ProjectRulesetMissing { .. }
             | Self::ProjectRulesetInstalled { .. }
+            | Self::ProjectRepoChanged { .. }
+            | Self::ProjectRepoUnreachable { .. }
+            | Self::ProjectRemoved { .. }
             | Self::RoleAdded(..)
             | Self::RoleChanged { .. }
             | Self::RoleRemoved(..)

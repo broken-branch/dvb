@@ -66,9 +66,9 @@ impl Pipe {
     }
 }
 
-/// The last lines a session's CLI wrote to stderr, secret-scrubbed: a failed
-/// session leaves them for the engine. Every line still reaches the worker's
-/// own stderr as it comes.
+/// The last lines a session's CLI wrote to stderr: a failed session leaves
+/// them for the engine to clean. Every line still reaches the worker's own
+/// stderr as it comes.
 #[derive(Clone, Debug, Default)]
 pub struct StderrTail(Arc<(Mutex<Tail>, Condvar)>);
 
@@ -82,7 +82,7 @@ struct Tail {
 /// Lines kept, and the bytes kept of each (its end).
 const TAIL_LINES: usize = 5;
 const TAIL_LINE_MAX: usize = 1024;
-/// A longer line is read, scanned and kept as pieces of this size.
+/// A longer line is read and kept as pieces of this size.
 const READ_LINE_MAX: u64 = 64 * 1024;
 /// How long `text` waits for an ended CLI's last stderr to be read.
 const DRAIN_WAIT: Duration = Duration::from_secs(1);
@@ -118,11 +118,10 @@ impl StderrTail {
         });
     }
 
-    /// Keeps `text`'s lines, each scanned whole.
+    /// Keeps `text`'s lines, trimmed and cut.
     pub fn push(&self, text: &str) {
         let lines: Vec<String> = text
             .lines()
-            .map(|line| dvb_forge::scan::scrub(&dvb_core::text::plain(line)))
             .filter_map(|line| {
                 let line = line.trim();
                 let cut = line.ceil_char_boundary(line.len().saturating_sub(TAIL_LINE_MAX));

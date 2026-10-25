@@ -124,6 +124,7 @@ fn interrupted() -> ForgeError {
     ForgeError {
         rate_limit: None,
         retryable: true,
+        unreachable: false,
         detail: "simulated interruption".into(),
     }
 }
@@ -136,6 +137,16 @@ impl Forge for InterruptedForge {
     }
     async fn discover_checks(&self, repo: &Repo) -> dvb_core::api::GithubCheckDiscovery {
         self.inner.discover_checks(repo).await
+    }
+
+    async fn repository_id(&self, repo: &Repo) -> Result<Option<u64>, ForgeError> {
+        self.inner.repository_id(repo).await
+    }
+    fn repoint_mirror(&self, from: &Repo, to: &Repo) -> Result<(), ForgeError> {
+        self.inner.repoint_mirror(from, to)
+    }
+    fn forget_mirror(&self, repo: &Repo) -> Result<(), ForgeError> {
+        self.inner.forget_mirror(repo)
     }
 
     async fn mirror_project(&self, repo: &Repo) -> Result<(), ForgeError> {
@@ -327,6 +338,7 @@ impl Forge for InterruptedForge {
             return Err(ForgeError {
                 rate_limit: None,
                 retryable: false,
+                unreachable: false,
                 detail: "open PR refused".into(),
             });
         }

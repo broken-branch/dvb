@@ -435,10 +435,10 @@ pub(super) async fn review(e: &AppState, t: &Task, p: &Project) -> Result<Next, 
             e,
             &t.view.id,
             Actor::Engine,
-            "fix",
-            Command::Start(a.clone()),
+            crate::Decision::new("fix", Command::Start(a.clone())),
             &a,
             None,
+            |_| Ok(()),
         )?;
         return Ok(Next::Idle);
     }
@@ -510,10 +510,10 @@ pub(super) async fn retry(
         e,
         task,
         Actor::Engine,
-        "retry",
-        Command::Start(a.clone()),
+        crate::Decision::new("retry", Command::Start(a.clone())),
         &a,
         from,
+        |_| Ok(()),
     )?;
     Ok(Next::Idle)
 }

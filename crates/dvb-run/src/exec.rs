@@ -1159,7 +1159,7 @@ mod tests {
     }
 
     #[test]
-    fn a_crashed_session_says_its_exit_code_and_leaves_its_last_stderr_lines_scrubbed() {
+    fn a_crashed_session_says_its_exit_code_and_leaves_its_last_stderr_lines() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_owned();
         std::fs::create_dir_all(dir.join("ws")).unwrap();
@@ -1189,9 +1189,9 @@ mod tests {
             [
                 "line 6",
                 "line 7",
-                "[line withheld by dvb's secret scan: anthropic-key]",
+                &format!("auth: {token}"),
                 &"y".repeat(1024),
-                "fatal: out of memory",
+                "\u{1b}[31mfatal: out of memory\u{1b}[0m",
             ]
         );
     }

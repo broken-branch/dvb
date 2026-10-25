@@ -85,6 +85,9 @@ pub struct ForgeError {
     pub rate_limit: Option<RateLimit>,
     /// Worth retrying (network, rate limit, 5xx), as opposed to refused.
     pub retryable: bool,
+    /// GitHub refused a token for the repository by its saved name (HTTP 422):
+    /// it was renamed or moved, or the App's installation no longer has it.
+    pub unreachable: bool,
     pub detail: String,
 }
 
@@ -244,6 +247,16 @@ pub trait Forge: Send + Sync {
     async fn accessible_repositories(&self) -> Result<crate::api::GithubRepositories, ForgeError>;
     /// Discover latest check runs on the immutable current default-branch head.
     async fn discover_checks(&self, repo: &Repo) -> crate::api::GithubCheckDiscovery;
+
+    /// The repository's id, read with the installation's token: GitHub follows
+    /// a renamed or moved repository's old name. None when no repository has the name.
+    async fn repository_id(&self, repo: &Repo) -> Result<Option<u64>, ForgeError>;
+    /// Move the mirror's receipts of `from` to `to`, the same repository under
+    /// its new name, so the next pass updates its milestones and board items.
+    fn repoint_mirror(&self, from: &Repo, to: &Repo) -> Result<(), ForgeError>;
+    /// Drop the mirror's local receipts of `repo` (its board, milestones and
+    /// cards) when its project is removed. Writes nothing on GitHub.
+    fn forget_mirror(&self, repo: &Repo) -> Result<(), ForgeError>;
 
     /// Prepare the private organization board for this project, even before its first goal.
     async fn mirror_project(&self, repo: &Repo) -> Result<(), ForgeError>;

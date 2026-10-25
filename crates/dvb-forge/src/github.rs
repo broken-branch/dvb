@@ -87,6 +87,7 @@ pub(super) fn refused(detail: impl Into<String>) -> ForgeError {
     ForgeError {
         rate_limit: None,
         retryable: false,
+        unreachable: false,
         detail: detail.into(),
     }
 }
@@ -102,6 +103,7 @@ pub(super) fn api_error(error: impl Into<GatewayError>) -> ForgeError {
     if let GatewayError::Wait(limit, status) = error {
         return ForgeError {
             retryable: true,
+            unreachable: false,
             detail: status.map_or_else(
                 || "GitHub rate limit".into(),
                 |status| format!("GitHub HTTP {status} (rate limit)"),
@@ -113,6 +115,7 @@ pub(super) fn api_error(error: impl Into<GatewayError>) -> ForgeError {
     ForgeError {
         rate_limit: None,
         retryable: status.is_none_or(|s| s == 429 || s == 403 || s >= 500),
+        unreachable: false,
         // Response bodies can echo tokens or unscanned submitted data. Never log them;
         // only the plain-word validation codes GitHub returns (`resource`/`field`/`code`).
         detail: status.map_or_else(
@@ -338,7 +341,14 @@ impl GitHub {
                 Some(&body),
             )
             .await
-            .map_err(api_error)?;
+            .map_err(|error| {
+                // GitHub knows an installation's repositories only by their current names.
+                let unreachable = repo.is_some() && http_status(&error) == Some(422);
+                ForgeError {
+                    unreachable,
+                    ..api_error(error)
+                }
+            })?;
         let token = text(&response, "token")?.to_owned();
         let expires_at = stamp_of(text(&response, "expires_at")?)?;
         let session = Session {
@@ -521,6 +531,7 @@ fn git_error(error: &GitError, token: Option<&str>) -> ForgeError {
     ForgeError {
         rate_limit: None,
         retryable: !local && !rejected,
+        unreachable: false,
         detail: if lines.is_empty() {
             prefix.into()
         } else {
@@ -582,6 +593,27 @@ impl Forge for GitHub {
             ),
             repositories,
         })
+    }
+    async fn repository_id(&self, repo: &Repo) -> Result<Option<u64>, ForgeError> {
+        let Ok(route) = self.route(repo, "") else {
+            return Ok(None);
+        };
+        let api = self.session(None).await?.client;
+        match api.get(route).await {
+            Ok(metadata) => metadata["id"]
+                .as_u64()
+                .map(Some)
+                .ok_or_else(|| refused("repository id missing")),
+            Err(error) if http_status(&error) == Some(404) => Ok(None),
+            Err(error) => Err(api_error(error)),
+        }
+    }
+    fn repoint_mirror(&self, from: &Repo, to: &Repo) -> Result<(), ForgeError> {
+        self.repo_name(to)?;
+        self.repoint_ids(&from.0, &to.0)
+    }
+    fn forget_mirror(&self, repo: &Repo) -> Result<(), ForgeError> {
+        self.forget_ids(&repo.0)
     }
     async fn discover_checks(&self, repo: &Repo) -> dvb_core::api::GithubCheckDiscovery {
         use dvb_core::api::{GithubCheckDiscovery as Discovery, GithubFailureCode};
@@ -1306,6 +1338,7 @@ impl Forge for GitHub {
         Err(ForgeError {
             rate_limit: None,
             retryable: status == 429 || status >= 500,
+            unreachable: false,
             detail: format!("GitHub HTTP {status}"),
         })
     }

@@ -40,6 +40,8 @@ struct RepoState {
     /// Merges need the head up to date with the base (a strict ruleset).
     up_to_date: bool,
     created_id: Option<u64>,
+    /// The repository's id, given when it is first asked for.
+    id: Option<u64>,
     goals: BTreeMap<String, (u64, dvb_core::forge::GoalMirror)>,
     cards: BTreeMap<String, dvb_core::forge::TaskMirror>,
 }
@@ -60,6 +62,9 @@ pub struct FakeForge {
     personal: std::sync::atomic::AtomicBool,
     /// Dev mode: a repository's issues are `<dir>/<repo-name>.json`, read on every issue read.
     issue_files: Option<PathBuf>,
+    /// Old name -> new name of each renamed repository.
+    renamed: Mutex<BTreeMap<Repo, Repo>>,
+    ids: std::sync::atomic::AtomicU64,
 }
 
 impl FakeForge {
@@ -154,6 +159,37 @@ impl FakeForge {
                 .collect();
         });
         Ok(())
+    }
+
+    /// Like GitHub, no repository token is given for a renamed repository's old name.
+    fn reached(&self, repo: &Repo) -> Result<(), ForgeError> {
+        if self
+            .renamed
+            .lock()
+            .unwrap_or_else(dvb_core::sync::recover)
+            .contains_key(repo)
+        {
+            return Err(ForgeError {
+                rate_limit: None,
+                retryable: false,
+                unreachable: true,
+                detail: "GitHub HTTP 422".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Test control: rename the repository, keeping its state; its old name
+    /// still finds its id, as GitHub's redirect does.
+    pub fn rename_repo(&self, from: &Repo, to: &Repo) {
+        let mut repos = self.repos.lock().unwrap_or_else(dvb_core::sync::recover);
+        let state = repos.remove(from).unwrap_or_default();
+        repos.insert(to.clone(), state);
+        drop(repos);
+        self.renamed
+            .lock()
+            .unwrap_or_else(dvb_core::sync::recover)
+            .insert(from.clone(), to.clone());
     }
 
     fn with<T>(&self, repo: &Repo, f: impl FnOnce(&mut RepoState) -> T) -> T {
@@ -300,8 +336,37 @@ impl Forge for FakeForge {
         }
     }
 
+    async fn repository_id(&self, repo: &Repo) -> Result<Option<u64>, ForgeError> {
+        self.request("repository_id")?;
+        let mut current = repo.clone();
+        while let Some(next) = self
+            .renamed
+            .lock()
+            .unwrap_or_else(dvb_core::sync::recover)
+            .get(&current)
+            .cloned()
+        {
+            current = next;
+        }
+        let mut repos = self.repos.lock().unwrap_or_else(dvb_core::sync::recover);
+        Ok(repos.get_mut(&current).map(|r| {
+            *r.id.get_or_insert_with(|| {
+                self.ids.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+            })
+        }))
+    }
+    fn repoint_mirror(&self, _from: &Repo, _to: &Repo) -> Result<(), ForgeError> {
+        // The Fake's mirror state moves with its repository on rename.
+        self.request("repoint_mirror")
+    }
+    fn forget_mirror(&self, _repo: &Repo) -> Result<(), ForgeError> {
+        // The Fake's state is the remote's, which a removal leaves as it is.
+        self.request("forget_mirror")
+    }
+
     async fn mirror_project(&self, repo: &Repo) -> Result<(), ForgeError> {
         self.request("mirror_project")?;
+        self.reached(repo)?;
         self.with(repo, |_| ());
         Ok(())
     }
@@ -311,6 +376,7 @@ impl Forge for FakeForge {
         goal: &dvb_core::forge::GoalMirror,
     ) -> Result<u64, ForgeError> {
         self.request("mirror_goal")?;
+        self.reached(repo)?;
         Ok(self.with(repo, |r| {
             let number = r
                 .goals
@@ -326,6 +392,7 @@ impl Forge for FakeForge {
         task: &dvb_core::forge::TaskMirror,
     ) -> Result<(), ForgeError> {
         self.request("mirror_task")?;
+        self.reached(repo)?;
         self.with(repo, |r| r.cards.insert(task.key.clone(), task.clone()));
         Ok(())
     }
@@ -673,6 +740,7 @@ impl Forge for FakeForge {
             Err(ForgeError {
                 rate_limit: None,
                 retryable: false,
+                unreachable: false,
                 detail: format!("{} failed again after its rerun", again.join(", ")),
             })
         })
@@ -773,6 +841,7 @@ impl Forge for FakeForge {
 
     async fn issue(&self, repo: &Repo, number: u64) -> Result<Option<Issue>, IssueError> {
         self.request("issue")?;
+        self.reached(repo)?;
         self.read_issue_file(repo)?;
         self.with(repo, |r| {
             if r.prs.iter().any(|pr| pr.number == number) {
@@ -784,6 +853,7 @@ impl Forge for FakeForge {
 
     async fn open_issues(&self, repo: &Repo) -> Result<Vec<IssueSummary>, ForgeError> {
         self.request("open_issues")?;
+        self.reached(repo)?;
         self.read_issue_file(repo)?;
         Ok(self.with(repo, |r| {
             r.issues
@@ -804,6 +874,7 @@ impl Forge for FakeForge {
 
     async fn visibility(&self, repo: &Repo) -> Result<Visibility, ForgeError> {
         self.request("visibility")?;
+        self.reached(repo)?;
         Ok(self.with(repo, |r| {
             if r.public {
                 Visibility::Public

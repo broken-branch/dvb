@@ -15,6 +15,8 @@ pub struct Task {
     /// Stopped by the owner with a reason: they know why, so the stop wakes
     /// no orchestrator. Cleared when the task moves on.
     pub held: bool,
+    /// The update's unconsumed stop; its event id also guards a racing owner stop.
+    pub update_stop: Option<EventId>,
     pub merged_at: Option<EventId>,
     /// The branch was published, but its PR body has not reached review yet.
     /// Kept through effect retries and terminal failure, and derived on replay.
@@ -297,10 +299,15 @@ impl Projections {
     )]
     pub(super) fn fold_tasks(&mut self, e: &Event) {
         match &e.kind {
-            EventKind::TaskStopped { task, reason } => {
+            EventKind::TaskStopped {
+                task,
+                reason,
+                update,
+            } => {
                 if let Some(t) = self.tasks.get_mut(task) {
                     t.view.reason.clone_from(reason);
                     t.held = e.actor == Actor::Owner && reason.is_some();
+                    t.update_stop = (*update && e.actor == Actor::Engine).then_some(e.id);
                 }
             }
             EventKind::TaskReasonChanged {
@@ -338,6 +345,11 @@ impl Projections {
                     // A reasoned hold, and its reason, survive a restart's
                     // reconciliation: to `Unknown` and back to stopped.
                     let unknown = |s: &TaskState| matches!(s, TaskState::Unknown { .. });
+                    if !(unknown(to)
+                        || matches!(to, TaskState::Stopped { .. }) && unknown(&t.view.state))
+                    {
+                        t.update_stop = None;
+                    }
                     t.held = t.held
                         && (unknown(to)
                             || matches!(to, TaskState::Stopped { .. }) && unknown(&t.view.state));

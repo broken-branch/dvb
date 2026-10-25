@@ -6,7 +6,7 @@ use super::handover::{self, Layout};
 use super::{available, release_public_key};
 use crate::InternalError;
 use crate::engine::{Engine, Fail};
-use dvb_core::api::{StartUpdate, UpdateInfo, UpdateStatus};
+use dvb_core::api::{StartUpdate, UpdateCompletion, UpdateInfo, UpdateStatus};
 use dvb_core::{Actor, Clock, EventKind, Refusal, RefusalCode};
 use std::path::Path;
 use std::sync::Arc;
@@ -32,6 +32,11 @@ pub fn status(e: &Engine) -> Option<UpdateStatus> {
         to,
         runs_active: u32::try_from(runs_active(e)).unwrap_or(u32::MAX),
     })
+}
+
+/// The latest update receipt, folded with task markers from the same committed prefix.
+pub fn completion(e: &Engine) -> Option<UpdateCompletion> {
+    e.proj().update_completion()
 }
 
 /// How long the drain waits for running work before stopping it.
@@ -78,15 +83,18 @@ pub async fn handover(e: &Arc<Engine>, l: &Layout, to: &str, exec: &Exec) -> Str
         Err(why) => why.to_string(),
     };
     e.update.lift_quiesce();
-    e.update.reopen_admission();
-    e.update.end();
-    let _ = e.append_checked(None, Actor::Engine, |_, _| {
+    let recorded = e.append_checked(None, Actor::Engine, |_, _| {
         Ok(vec![EventKind::EngineUpdateFailed {
             from: dvb_core::VERSION.to_owned(),
             to: to.to_owned(),
             reason: outcome.clone(),
         }])
     });
+    if let Err(err) = recorded {
+        eprintln!("dvb engine: record failed update: {err}");
+    }
+    e.update.end();
+    e.update.reopen_admission();
     outcome
 }
 
@@ -238,6 +246,7 @@ pub async fn start_with(
         current: current.to_owned(),
         available: Some(to.clone()),
         updating: Some(status(&e).unwrap_or(UpdateStatus { to, runs_active: 0 })),
+        completed: None,
     })
 }
 

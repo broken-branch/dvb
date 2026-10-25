@@ -643,6 +643,7 @@ async fn adding_a_project_reports_its_open_issues() {
         ForgeError {
             rate_limit: None,
             retryable: true,
+            unreachable: false,
             detail: "GitHub HTTP 502".into(),
         },
     );

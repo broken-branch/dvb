@@ -567,6 +567,13 @@ pub enum ProjectVerb {
         #[arg(long)]
         json: bool,
     },
+    /// Point the project at its repository's new name after a rename or
+    /// transfer: the same repository, checked by its GitHub id.
+    Repo { project: String, repo: String },
+    /// Remove a project from dvb and free its files on this machine (work
+    /// directories, mirror, toolchain cache, GitHub mirror receipts). Refused
+    /// while it has running or open tasks; nothing changes on GitHub.
+    Remove { project: String },
     /// List projects.
     List {
         /// Print {"projects": [...]}, each project as `project add --json` prints it.
@@ -1074,6 +1081,45 @@ async fn run(target: &Target, client: &Client, verb: Verb) -> Result<i32, CliErr
                         write_stdout(format_args!("{name}\n"))?;
                     }
                 }
+            }
+        }
+        Verb::Project(ProjectVerb::Repo { project, repo }) => {
+            let before = project_id(client, &project).await?;
+            let p: ProjectView = client
+                .put(
+                    &format!("/projects/{}/repo", before.id),
+                    &dvb_core::api::ProjectRepo { repo },
+                )
+                .await?;
+            if let Some(text) = dvb_core::wording::event_text(
+                &EventKind::ProjectRepoChanged {
+                    from: before.repo,
+                    to: p.repo,
+                },
+                local_time,
+            ) {
+                write_stdout(format_args!("{text}\n"))?;
+            }
+        }
+        Verb::Project(ProjectVerb::Remove { project }) => {
+            let p = project_id(client, &project).await?;
+            let removal: dvb_core::api::ProjectRemoval = client
+                .post(&format!("/projects/{}/remove", p.id), &())
+                .await?;
+            if let Some(text) = dvb_core::wording::event_text(
+                &EventKind::ProjectRemoved {
+                    name: removal.project.name,
+                    repo: removal.project.repo,
+                },
+                local_time,
+            ) {
+                write_stdout(format_args!("{text}\n"))?;
+            }
+            if !removal.not_freed.is_empty() {
+                for left in &removal.not_freed {
+                    eprintln!("dvb: not freed: {left}");
+                }
+                return Ok(1);
             }
         }
         Verb::Project(ProjectVerb::List { json }) => {

@@ -935,3 +935,59 @@ describe('plan on hold', () => {
     );
   });
 });
+describe('remove project', () => {
+  afterEach(() => {
+    history.replaceState({}, '', '/');
+  });
+  const removal = (source: ReturnType<typeof createFixtureSource>) =>
+    source.fetch.mock.calls.filter(
+      ([url, options]) =>
+        String(url).endsWith('/projects/harbour/remove') && options?.method === 'POST',
+    );
+  it.each(['Cancel', 'Close', 'Escape'])(
+    'asks once, naming the project, and %s restores focus without removing anything',
+    async (dismissal) => {
+      const source = createFixtureSource();
+      const { user } = mount(<ProjectPage id="harbour" tab="settings" />, source);
+      const remove = screen.getByRole('button', { name: 'Remove' });
+      await user.click(remove);
+      const dialog = screen.getByRole('dialog', { name: 'Remove Harbour?' });
+      expect(dialog).toHaveAccessibleDescription(/^Harbour \(example-org\/harbour\) leaves dvb/);
+      if (dismissal === 'Escape') await user.keyboard('{Escape}');
+      else await user.click(within(dialog).getByRole('button', { name: dismissal }));
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      await waitFor(() => expect(remove).toHaveFocus());
+      expect(removal(source)).toHaveLength(0);
+    },
+  );
+  it("shows the engine's refusal for open tasks and keeps the project", async () => {
+    const source = createFixtureSource();
+    const detail =
+      'Harbour has running or open work: resume "Keep removed records removed" (running): stop it with dvb stop resume';
+    source.replies['POST /projects/harbour/remove'] = {
+      code: 'PROJECT_BUSY',
+      tasks: ['resume'],
+      detail,
+    };
+    source.statuses['POST /projects/harbour/remove'] = 409;
+    const { user } = mount(<ProjectPage id="harbour" tab="settings" />, source);
+    await user.click(screen.getByRole('button', { name: 'Remove' }));
+    const dialog = screen.getByRole('dialog', { name: 'Remove Harbour?' });
+    await user.click(within(dialog).getByRole('button', { name: 'Remove Harbour' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(detail);
+    expect(removal(source)).toHaveLength(1);
+    expect(source.getSnapshot().projects.map((p) => p.id)).toContain('harbour');
+    expect(location.hash).toBe('#project/harbour/settings');
+  });
+  it('removes the project through the API, drops it from the lists and goes Home', async () => {
+    const source = createFixtureSource();
+    const [harbour] = source.getSnapshot().projects;
+    source.replies['POST /projects/harbour/remove'] = { project: harbour, not_freed: [] };
+    const { user } = mount(<ProjectPage id="harbour" tab="settings" />, source);
+    await user.click(screen.getByRole('button', { name: 'Remove' }));
+    await user.click(screen.getByRole('button', { name: 'Remove Harbour' }));
+    await waitFor(() => expect(location.hash).toBe('#home'));
+    expect(removal(source)).toHaveLength(1);
+    expect(source.getSnapshot().projects.map((p) => p.id)).not.toContain('harbour');
+  });
+});

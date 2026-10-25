@@ -589,6 +589,47 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/projects/{id}/remove': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Refused while the project has running or open tasks, or a run still working.
+     *     Frees its run directories, mirror, toolchain cache and mirror receipts; makes
+     *     no GitHub call.
+     */
+    post: operations['remove_project'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/projects/{id}/repo': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /**
+     * Only the same repository, read by its id through the App's installation, is
+     *     accepted. Goals, tasks and history stay; the mirror's receipts move with it.
+     */
+    put: operations['set_project_repo'];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/projects/{id}/resume': {
     parameters: {
       query?: never;
@@ -1327,6 +1368,42 @@ export interface components {
         }
       | {
           /** @enum {string} */
+          kind: 'project.repo_changed';
+          /**
+           * @description The owner pointed the project at its repository's new name, checked
+           *     to be the same repository; earlier events keep the name they had.
+           */
+          payload: {
+            from: string;
+            to: string;
+          };
+        }
+      | {
+          /** @enum {string} */
+          kind: 'project.repo_unreachable';
+          /**
+           * @description GitHub gave no token for the project's repository by its saved name
+           *     (HTTP 422). Recorded once, until a mirror write succeeds or the
+           *     project is repointed.
+           */
+          payload: {
+            repo: string;
+          };
+        }
+      | {
+          /** @enum {string} */
+          kind: 'project.removed';
+          /**
+           * @description The owner removed the project from this install: it leaves every
+           *     view and takes no goal. Its earlier events stay; GitHub is untouched.
+           */
+          payload: {
+            name: string;
+            repo: string;
+          };
+        }
+      | {
+          /** @enum {string} */
           kind: 'role.added';
           payload: components['schemas']['RoleRecord'];
         }
@@ -1555,6 +1632,8 @@ export interface components {
           payload: {
             reason?: string | null;
             task: components['schemas']['TaskId'];
+            /** @description Resume this stop once after update handover or rollback. */
+            update?: boolean;
           };
         }
       | {
@@ -2374,6 +2453,19 @@ export interface components {
     };
     /** @description A project. */
     ProjectId: string;
+    /**
+     * @description A project removed from this install, and its files on this machine that
+     *     could not be freed, each as `<path>: <error>`.
+     */
+    ProjectRemoval: {
+      not_freed: string[];
+      project: components['schemas']['ProjectView'];
+    };
+    /** @description The project's repository under its new name, after a rename or transfer. */
+    ProjectRepo: {
+      /** @description A GitHub `owner/name`. */
+      repo: string;
+    };
     ProjectView: {
       ci: components['schemas']['CiMode'];
       default_branch: string;
@@ -2625,6 +2717,15 @@ export interface components {
       | {
           /** @enum {string} */
           code: 'GOAL_ORDER_CYCLE';
+        }
+      | {
+          /** @enum {string} */
+          code: 'REPOSITORY_MISMATCH';
+        }
+      | {
+          /** @enum {string} */
+          code: 'PROJECT_BUSY';
+          tasks: components['schemas']['TaskId'][];
         };
     /** @description A refused command (`command.refused`). */
     RefusedCommand: components['schemas']['RecordedRefusal'] & {
@@ -3003,8 +3104,21 @@ export interface components {
      * @description Milliseconds since the Unix epoch, UTC.
      */
     Timestamp: number;
+    UpdateCompletion: {
+      /**
+       * Format: int32
+       * @description Update stops still waiting to resume (including startup reconciliation).
+       */
+      pending: number;
+      /** Format: int32 */
+      resumed: number;
+      /** Format: int32 */
+      stopped: number;
+      to: string;
+    };
     UpdateInfo: {
       available?: string | null;
+      completed?: components['schemas']['UpdateCompletion'] | null;
       current: string;
       updating?: components['schemas']['UpdateStatus'] | null;
     };
@@ -3012,7 +3126,7 @@ export interface components {
     UpdateStatus: {
       /**
        * Format: int32
-       * @description Runs still going; the update waits for them (stop them to go on).
+       * @description Runs still going; drain waits up to 30 seconds, then stops them.
        */
       runs_active: number;
       to: string;
@@ -4999,6 +5113,108 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['IssueCounts'];
+        };
+      };
+      /** @description Refused, with a code */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['Refusal'];
+        };
+      };
+      /** @description Refused, with a code */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['Refusal'];
+        };
+      };
+      /** @description Refused, with a code */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['Refusal'];
+        };
+      };
+    };
+  };
+  remove_project: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components['schemas']['ProjectId'];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The removed project and the files that could not be freed; records `project.removed` */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ProjectRemoval'];
+        };
+      };
+      /** @description Refused, with a code */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['Refusal'];
+        };
+      };
+      /** @description Refused, with a code */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['Refusal'];
+        };
+      };
+      /** @description Refused, with a code */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['Refusal'];
+        };
+      };
+    };
+  };
+  set_project_repo: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: components['schemas']['ProjectId'];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ProjectRepo'];
+      };
+    };
+    responses: {
+      /** @description The project under its repository's new name; records `project.repo_changed` */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ProjectView'];
         };
       };
       /** @description Refused, with a code */

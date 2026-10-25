@@ -3477,6 +3477,7 @@ async fn other_merges_during_ci_never_fail_the_task() {
         dvb_core::forge::ForgeError {
             rate_limit: None,
             retryable: false,
+            unreachable: false,
             detail: "cancel refused".into(),
         },
     );
@@ -4632,6 +4633,7 @@ async fn a_failed_preparation_leaves_the_fix_round_to_the_next_look() {
         *f.interrupted.fetch_error.lock().unwrap() = Some(dvb_core::forge::ForgeError {
             rate_limit: None,
             retryable: true,
+            unreachable: false,
             detail: "simulated interruption".into(),
         });
         dispatch::step_now(&f.e, &f.task).await.unwrap();

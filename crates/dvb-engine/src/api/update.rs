@@ -25,6 +25,7 @@ pub async fn get_update(State(e): State<AppState>, Query(q): Query<UpdateQuery>)
     // While an update is under way, answer from it: no network, and the
     // progress stays readable if the release list is not.
     let updating = update::protocol::status(&e);
+    let completed = update::protocol::completion(&e);
     if updating.is_some() || q.check != Some(true) {
         return Json(UpdateInfo {
             current: dvb_core::VERSION.into(),
@@ -33,6 +34,7 @@ pub async fn get_update(State(e): State<AppState>, Query(q): Query<UpdateQuery>)
                 .map(|u| u.to.clone())
                 .or_else(|| e.update.available()),
             updating,
+            completed,
         })
         .into_response();
     }
@@ -43,6 +45,7 @@ pub async fn get_update(State(e): State<AppState>, Query(q): Query<UpdateQuery>)
                 current: dvb_core::VERSION.into(),
                 available,
                 updating: None,
+                completed,
             })
             .into_response()
         }

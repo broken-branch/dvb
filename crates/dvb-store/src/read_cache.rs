@@ -303,6 +303,9 @@ fn index_event<'a>(conn: &Connection, e: &'a Event) -> Result<Scope<'a>, StoreEr
         | ProjectIssuesFound(_)
         | ProjectRulesetMissing {}
         | ProjectRulesetInstalled {}
+        | ProjectRepoChanged { .. }
+        | ProjectRepoUnreachable { .. }
+        | ProjectRemoved { .. }
         | ProposalRequested {}
         | SettingsChanged { .. }
         | QuestionAnswered { .. }

@@ -1,7 +1,7 @@
 //! In-memory views folded from durable events and rebuilt at startup.
 
 use dvb_core::{Actor, Event, EventId, EventKind, GoalId, ProjectId, QuestionId, RunId, TaskId};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug)]
 pub struct Projections {
@@ -22,6 +22,9 @@ pub struct Projections {
     /// Resource notices and current holds, including taskless pre-launch waits.
     /// Polling reads these folds without reading retained output.
     resource_notices: BTreeMap<RunId, ResourceNotices>,
+    update_batch: BTreeSet<TaskId>,
+    update_interrupted: BTreeSet<TaskId>,
+    update_completed: Option<dvb_core::api::UpdateCompletion>,
 }
 
 impl Default for Projections {
@@ -39,6 +42,9 @@ impl Default for Projections {
             failed_runs: Default::default(),
             previous_problem: None,
             resource_notices: BTreeMap::new(),
+            update_batch: BTreeSet::new(),
+            update_interrupted: BTreeSet::new(),
+            update_completed: None,
         }
     }
 }
@@ -50,6 +56,7 @@ mod roles;
 mod runs;
 mod settings;
 mod tasks;
+mod update;
 
 pub use dvb_core::event::QuestionKind;
 pub use goals::Goal;
@@ -147,6 +154,7 @@ impl Projections {
             return;
         }
         self.fold_tasks(e);
+        self.fold_update(e);
         let goal_states = self.fold_goals(e, &final_goals, task_final);
         self.fold_questions(e, previous_problem.as_ref());
         self.fold_roles(e);

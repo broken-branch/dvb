@@ -262,6 +262,7 @@ async fn socket_status_json_has_the_counts_goals_tasks_questions_and_items() {
                 },
             },
             EventKind::TaskStopped {
+                update: false,
                 task: TaskId::new("t-stop"),
                 reason: Some("not before Monday".into()),
             },

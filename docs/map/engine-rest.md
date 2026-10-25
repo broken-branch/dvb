@@ -10,8 +10,9 @@ Paths below are under `crates/dvb-engine/src/`.
 
 - `lib.rs`, `engine.rs`, `serve.rs`: startup, shared state and socket serving.
 - `api/mod.rs`, `run_api/mod.rs`: owner and worker route tables.
-- `api/projects.rs`, `projects_add.rs`, `goals.rs`, `questions.rs`, `tasks.rs`: owner work
-  commands, project addition, goal issues and proposals, answers and task evidence.
+- `api/projects.rs`, `projects_add.rs`, `projects_repo.rs`, `projects_remove.rs`, `goals.rs`,
+  `questions.rs`, `tasks.rs`: owner work commands, project addition, repointing and removal,
+  goal issues and proposals, answers and task evidence.
 - `api/roles.rs`, `hires.rs`, `models.rs`, `settings.rs`, `only.rs`: team, preferences and
   timed model selection; `runs_memory.rs` reads and sets the runs' slice limit.
 - `api/history.rs`: shared history folds, restores and stale-edit checks.
@@ -33,7 +34,8 @@ Paths below are under `crates/dvb-engine/src/`.
   the mirror pass also calls `wake::on_new_issue` for each project.
 - `vendors.rs`, `only.rs`, `usage/`: vendor limits, timed selection and accounting.
 - `units.rs`: systemd D-Bus unit control and the dev process launcher.
-- `update/`: signed downloads, drain/handover, backups, rollback and local updates.
+- `update/`: signed downloads, bounded drain/handover, update-stop recovery receipts,
+  backups, rollback and local updates. Dispatch resumes marked update stops once.
 - `bin/openapi.rs`: generates the owner contract from the router.
 
 ## Start reading

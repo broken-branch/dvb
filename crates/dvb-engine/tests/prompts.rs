@@ -376,6 +376,7 @@ async fn a_stopped_task_shows_planned_or_running_and_its_reason() {
                 to: dvb_core::TaskState::Stopped { was: Box::new(was) },
             },
             EventKind::TaskStopped {
+                update: false,
                 task: TaskId::new(task),
                 reason: reason.map(str::to_owned),
             },

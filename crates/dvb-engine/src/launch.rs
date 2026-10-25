@@ -407,11 +407,17 @@ pub(crate) fn driver_cause(dir: &std::path::Path) -> Option<String> {
 
 const CAUSE_MAX: usize = 300;
 
-/// The last stderr lines the run's driver left, if any, scanned again here,
-/// where they leave the run: whole lines from the end within `STDERR_MAX`
-/// bytes, or the end of the last line when it alone is longer.
+/// The last stderr lines the run's driver left, if any, cleaned here because
+/// the run can write the file itself: whole lines from the end within
+/// `STDERR_MAX` bytes, or the end of the last line when it alone is longer.
 pub(crate) fn driver_stderr(dir: &std::path::Path) -> Option<String> {
-    let text = dvb_forge::scan::scrub(&read_run_file(&dir.join("stderr")).ok()?);
+    let text = read_run_file(&dir.join("stderr")).ok()?;
+    let text = text
+        .lines()
+        .map(dvb_core::text::plain)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = dvb_forge::scan::scrub(&text);
     let mut kept: Vec<&str> = Vec::new();
     let mut len = 0;
     for line in text.lines().rev().map(str::trim).filter(|l| !l.is_empty()) {

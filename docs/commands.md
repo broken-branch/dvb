@@ -54,7 +54,12 @@ dvb project add example --repo your-org/example --check <name>
 
 Use the actual check names from that repository's CI, or choose `--no-ci` if it
 has none. `dvb status example --all` includes finished work. `dvb update` installs
-the newest release.
+the newest release. It waits up to 30 seconds for running work, then stops any
+remaining task runs and resumes those tasks once after restart (also after a
+rollback). Owner stops and other engine stops stay stopped. A paused project
+keeps update stops pending until unpause without reserving a run slot. When the
+engine returns, the output reports whether every task run finished or how many
+were stopped, resumed, or remain pending automatic resume.
 
 ## Run capacity
 
@@ -689,6 +694,8 @@ the model the latest builder round ran on.
 | `dvb role edit <project> <role> [...]` | Change a role: only the fields you give change; an empty `--reports-to`, `--reviewed-by` or `--group` clears it. |
 | `dvb chart <project> report\|group\|reorder\|swap ...` | Move roles on the chart: who reports to whom, groups, order, or swap a role with its lead. |
 | `dvb retire <hire-id>` | Retire a hire, keeping its record. |
+| `dvb project repo <project> <owner/name>` | Point a project at its repository's new name after a rename or transfer; goals, tasks, history and the GitHub mirror stay with it, and a name that is not the same repository is refused (`REPOSITORY_MISMATCH`). |
+| `dvb project remove <project>` | Remove a project from dvb: it leaves `project list`, status and the app and takes no goal; its work directories, mirror, toolchain cache and GitHub mirror receipts on this machine are freed, its history stays and nothing changes on GitHub. Refused while it has running or open tasks (`PROJECT_BUSY`), naming each and how to stop it. |
 | `dvb project list [--json]` | List projects: name, id and repository, one per line; `--json` prints `{"projects": [...]}`, each as `project add --json` prints it. |
 
 With `--json`, `stop`, `retry` and `resume <task>` print `{"task": {...}}` as

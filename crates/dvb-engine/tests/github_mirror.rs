@@ -665,6 +665,7 @@ async fn untimed_mirror_limits_double_backoff_and_cap_at_one_hour() {
             "mirror_project",
             ForgeError {
                 retryable: true,
+                unreachable: false,
                 detail: "GitHub HTTP 429 (rate limit)".into(),
                 rate_limit: Some(RateLimit { reset: None }),
             },
@@ -940,4 +941,288 @@ async fn broadcast_lag_repairs_every_project() {
             .any(|(op, args)| *op == "mirror_project" && args[0] == "org/b")
     );
     watcher.abort();
+}
+
+#[tokio::test]
+async fn a_renamed_repository_is_reported_once_and_a_repoint_keeps_its_mirror() {
+    use axum::http::{Method, StatusCode};
+    let clock = Arc::new(FakeClock::at(Timestamp(1_000)));
+    let forge = Arc::new(dvb_forge::FakeForge::default().with_clock(clock.clone()));
+    let (_dir, e, project, _, _, _) = fixture_with_clock(Some(forge.clone()), clock.clone());
+    let (old, new) = (Repo("org/repo".into()), Repo("org/renamed".into()));
+    let mirror_dir = e.mirror("Project");
+    std::fs::create_dir_all(&mirror_dir).unwrap();
+    support::git::git(&mirror_dir, &["init", "--quiet", "--bare"]);
+    support::git::git(
+        &mirror_dir,
+        &["remote", "add", "origin", "https://github.com/org/repo.git"],
+    );
+    assert!(mirror::sync(&e).await.unwrap());
+    let (milestones, cards) = (forge.milestones(&old), forge.cards(&old));
+    assert_eq!((milestones.len(), cards.len()), (1, 2));
+    let observed = mirror_observations(&e).len();
+    let unreachable = |e: &AppState| {
+        support::events::all(e)
+            .into_iter()
+            .filter_map(|event| {
+                if let EventKind::ProjectRepoUnreachable { repo } = event.kind {
+                    Some(repo)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+
+    forge.rename_repo(&old, &new);
+    for _ in 0..3 {
+        assert!(!mirror::sync(&e).await.unwrap());
+        clock.advance_millis(3_600_000);
+    }
+    assert_eq!(
+        unreachable(&e),
+        ["org/repo"],
+        "one notice for every refused call"
+    );
+    assert_eq!(
+        mirror_observations(&e).len(),
+        observed,
+        "no observation per item"
+    );
+
+    for (name, detail) in [
+        ("org/missing", "reaches no repository named org/missing"),
+        ("org/other", "org/other is not the repository org/repo was"),
+    ] {
+        if name == "org/other" {
+            forge.mirror_project(&Repo(name.into())).await.unwrap();
+        }
+        let (status, body) = support::http::call(
+            &e,
+            Method::PUT,
+            "/projects/project/repo",
+            Some(serde_json::json!({"repo": name})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["code"], "REPOSITORY_MISMATCH");
+        assert!(body["detail"].as_str().unwrap().contains(detail), "{body}");
+    }
+    assert_eq!(e.proj().projects[&project].view.repo, "org/repo");
+
+    let (status, body) = support::http::call(
+        &e,
+        Method::PUT,
+        "/projects/project/repo",
+        Some(serde_json::json!({"repo": "org/renamed"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["repo"], "org/renamed");
+    assert_eq!(
+        support::git::git(&mirror_dir, &["config", "--get", "remote.origin.url"]),
+        "https://github.com/org/renamed.git"
+    );
+    let writes = forge.calls().len();
+    assert!(mirror::sync(&e).await.unwrap());
+    assert!(
+        forge.calls()[writes..]
+            .iter()
+            .any(|call| call == "mirror_goal")
+    );
+    assert_eq!(
+        forge.milestones(&new),
+        milestones,
+        "same milestone, no new one"
+    );
+    assert_eq!(forge.cards(&new).len(), cards.len());
+    assert_eq!(unreachable(&e).len(), 1);
+    let events = support::events::all(&e);
+    assert!(events.iter().any(|event| matches!(
+        &event.kind,
+        EventKind::ProjectRepoChanged { from, to } if from == "org/repo" && to == "org/renamed"
+    )));
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::ProjectAdded { repo, .. } if repo == "org/repo"
+        )),
+        "earlier events keep the old name"
+    );
+}
+
+#[tokio::test]
+async fn a_paused_project_with_stopped_tasks_is_removed_locally_and_github_gets_no_write() {
+    use axum::http::{Method, StatusCode};
+    let (_dir, e, project, goal, tasks, forge) = fixture();
+    let repo = Repo("org/repo".into());
+    e.append_checked(Some(&project), Actor::Engine, |_, _| {
+        Ok(vec![EventKind::GoalApproved { goal: goal.clone() }])
+    })
+    .unwrap();
+    let run = dvb_core::RunId::new("builder");
+    let builder = support::assignment::Assignment::new(run.clone())
+        .task(Some(tasks[0].clone()))
+        .build();
+    e.append_checked(Some(&project), Actor::Engine, |_, _| {
+        Ok(vec![EventKind::RunStarted(builder)])
+    })
+    .unwrap();
+    state(&e, &project, &tasks[0], TaskState::Running);
+    assert!(mirror::sync(&e).await.unwrap());
+    let (milestones, cards) = (forge.milestones(&repo), forge.cards(&repo));
+    assert_eq!((milestones.len(), cards.len()), (1, 2));
+    e.append_checked(Some(&project), Actor::Engine, |_, _| {
+        Ok(vec![EventKind::RunEnded {
+            run: run.clone(),
+            reason: dvb_core::event::EndReason::Stopped,
+            detail: None,
+            stderr: None,
+        }])
+    })
+    .unwrap();
+    for task in &tasks {
+        let was = Box::new(e.proj().tasks[task].view.state.clone());
+        state(&e, &project, task, TaskState::Stopped { was });
+    }
+    let (status, _) = support::http::call(&e, Method::POST, "/projects/project/pause", None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, before) = support::http::call(&e, Method::GET, "/status", None).await;
+    assert_eq!(before["tasks"].as_array().unwrap().len(), 2, "{before}");
+
+    let paths = &e.cfg.paths;
+    let files = [
+        paths.work.join(run.as_str()).join("ws"),
+        e.mirror("Project"),
+        paths
+            .mirrors
+            .join(".cache")
+            .join(project.as_str())
+            .join("cargo"),
+    ];
+    for dir in &files {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("file"), "kept").unwrap();
+    }
+    let other = paths.mirrors.join(".cache").join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let calls = forge.calls().len();
+
+    let (status, body) =
+        support::http::call(&e, Method::POST, "/projects/project/remove", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["project"]["name"], "Project");
+    assert_eq!(body["not_freed"], serde_json::json!([]));
+    for dir in [
+        paths.work.join(run.as_str()),
+        e.mirror("Project"),
+        paths.mirrors.join(".cache").join(project.as_str()),
+    ] {
+        assert!(!dir.exists(), "{} is freed", dir.display());
+    }
+    assert!(other.exists(), "another project's cache stays");
+
+    assert!(mirror::sync(&e).await.unwrap());
+    assert_eq!(
+        forge.calls()[calls..],
+        ["forget_mirror"],
+        "only the local receipts are dropped; nothing is sent to GitHub"
+    );
+    assert_eq!(forge.milestones(&repo), milestones, "milestones untouched");
+    assert_eq!(forge.cards(&repo), cards, "board untouched");
+
+    let events = support::events::all(&e);
+    assert!(events.iter().any(|event| matches!(
+        &event.kind,
+        EventKind::ProjectRemoved { name, repo } if name == "Project" && repo == "org/repo"
+    )));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::ProjectAdded { .. })),
+        "earlier events stay"
+    );
+    let (_, projects) = support::http::call(&e, Method::GET, "/projects", None).await;
+    assert_eq!(projects, serde_json::json!([]));
+    let (status, _) = support::http::call(&e, Method::GET, "/projects/project", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, after) = support::http::call(&e, Method::GET, "/status", None).await;
+    assert_eq!(after["needs_you"], 0, "{after}");
+    assert!(after.get("tasks").is_none(), "{after}");
+    let (_, goals) = support::http::call(&e, Method::GET, "/goals", None).await;
+    assert_eq!(goals, serde_json::json!([]));
+
+    let (status, body) = support::http::call(
+        &e,
+        Method::POST,
+        "/projects/project/goals",
+        Some(serde_json::json!({"text": "Ship more"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "PROJECT_UNKNOWN");
+    let (status, body) =
+        support::http::call(&e, Method::POST, "/projects/project/remove", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "PROJECT_UNKNOWN");
+}
+
+#[tokio::test]
+async fn a_project_with_running_or_open_tasks_is_not_removed() {
+    use axum::http::{Method, StatusCode};
+    let (_dir, e, project, goal, tasks, forge) = fixture();
+    e.append_checked(Some(&project), Actor::Engine, |_, _| {
+        Ok(vec![EventKind::GoalApproved { goal: goal.clone() }])
+    })
+    .unwrap();
+    state(&e, &project, &tasks[0], TaskState::Running);
+    let mirror_dir = e.mirror("Project");
+    std::fs::create_dir_all(&mirror_dir).unwrap();
+    let calls = forge.calls().len();
+
+    let (status, body) =
+        support::http::call(&e, Method::POST, "/projects/project/remove", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "PROJECT_BUSY");
+    assert_eq!(body["tasks"], serde_json::json!(["one", "two"]));
+    let detail = body["detail"].as_str().unwrap();
+    for named in [
+        "one \"Build one\" (Working): stop it with dvb stop one",
+        "two \"Build two\" (Planned): stop it with dvb stop two",
+    ] {
+        assert!(detail.contains(named), "{detail}");
+    }
+
+    // A stopped task whose run has not ended yet still holds the project.
+    for task in &tasks {
+        let was = Box::new(e.proj().tasks[task].view.state.clone());
+        state(&e, &project, task, TaskState::Stopped { was });
+    }
+    let builder = support::assignment::Assignment::new(dvb_core::RunId::new("builder"))
+        .task(Some(tasks[0].clone()))
+        .build();
+    e.append_checked(Some(&project), Actor::Engine, |_, _| {
+        Ok(vec![EventKind::RunStarted(builder)])
+    })
+    .unwrap();
+    let (status, body) =
+        support::http::call(&e, Method::POST, "/projects/project/remove", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["tasks"], serde_json::json!(["one"]));
+    assert!(
+        body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("one \"Build one\" has a run still ending"),
+        "{body}"
+    );
+
+    assert!(e.proj().projects.contains_key(&project));
+    assert!(mirror_dir.exists());
+    assert_eq!(forge.calls().len(), calls, "a refusal touches no receipt");
+    assert!(
+        !support::events::all(&e)
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::ProjectRemoved { .. }))
+    );
 }

@@ -1221,6 +1221,7 @@ fn stopped(
             },
         ),
         EventKind::TaskStopped {
+            update: false,
             task: ctx.task.clone(),
             reason: reason.map(str::to_owned),
         },

@@ -465,6 +465,7 @@ mod tests {
             let original = ForgeError {
                 rate_limit,
                 retryable: true,
+                unreachable: false,
                 detail: "setup budget".into(),
             };
             forge.fail_next("ruleset", original.clone());

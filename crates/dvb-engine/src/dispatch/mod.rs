@@ -181,6 +181,14 @@ async fn step(e: &AppState, task: &TaskId) -> Result<Next, Fail> {
         if matches!(next, Next::Wait(_)) {
             return Ok(next);
         }
+        if let Some(stop) = t.update_stop {
+            // Keep the durable intent until unpause; recording a run would reserve a slot.
+            if p.view.paused {
+                return Ok(Next::Idle);
+            }
+            control::resume_locked(e, task, dvb_core::Actor::Engine, Some(stop)).await?;
+            return Ok(Next::Idle);
+        }
         if t.view.outcome != dvb_core::run_verbs::BuilderOutcome::Complete && !p.view.paused {
             return outcomes::stopped(e, &t, &p).await;
         }

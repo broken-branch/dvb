@@ -112,7 +112,15 @@ pub fn board_state(state: &TaskState) -> BoardState {
     }
 }
 
-type Observations = BTreeMap<(ProjectId, GoalId, Option<TaskId>), (bool, Option<String>)>;
+/// A goal's milestone, or one of its task's board items.
+type Item = (ProjectId, GoalId, Option<TaskId>);
+
+#[derive(Default)]
+struct Observations {
+    items: BTreeMap<Item, (bool, Option<String>)>,
+    /// Projects told that GitHub reaches no repository by their saved name.
+    unreachable: BTreeSet<ProjectId>,
+}
 
 /// Each repository's visibility, read once per pass.
 type Visibilities = BTreeMap<Repo, Result<Visibility, ForgeError>>;
@@ -129,6 +137,22 @@ fn observed(
     task: Option<&TaskId>,
     result: Result<(), &crate::InternalError>,
 ) -> Result<(), Fail> {
+    // GitHub refuses the token on every call until the project is repointed.
+    if matches!(result, Err(crate::InternalError::Forge(error)) if error.unreachable) {
+        if observations.unreachable.insert(project.clone()) {
+            e.append_checked(Some(project), Actor::Engine, |proj, _| {
+                Ok(proj
+                    .projects
+                    .get(project)
+                    .map(|p| EventKind::ProjectRepoUnreachable {
+                        repo: p.view.repo.clone(),
+                    })
+                    .into_iter()
+                    .collect())
+            })?;
+        }
+        return Ok(());
+    }
     let outage = result.is_err_and(retryable);
     let (mirrored, detail) = match result {
         Ok(()) => (true, None),
@@ -139,10 +163,13 @@ fn observed(
     // One item records an outage for the whole project, and later its recovery.
     let seen = if outage {
         observations
+            .items
             .iter()
             .any(|((other, ..), seen)| other == project && *seen == observation)
     } else {
-        observations.get(&key) == Some(&observation)
+        // The first write after the notice records that it reached GitHub again.
+        observations.items.get(&key) == Some(&observation)
+            && !(mirrored && observations.unreachable.contains(project))
     };
     if !seen {
         e.append_checked(Some(project), Actor::Engine, |_, _| {
@@ -153,7 +180,10 @@ fn observed(
                 detail,
             }])
         })?;
-        observations.insert(key, observation);
+        observations.items.insert(key, observation);
+        if mirrored {
+            observations.unreachable.remove(project);
+        }
     }
     Ok(())
 }
@@ -177,22 +207,43 @@ async fn sync_projects(e: &AppState, affected: Option<&BTreeSet<ProjectId>>) -> 
     };
     // Serialize snapshots so event wakes cannot duplicate an in-flight retry.
     let mut retries = e.mirror_retries.lock().await;
-    let mut observations = Observations::new();
+    let mut observations = Observations::default();
     for event in e.store.select(
         dvb_core::EventId(0),
-        dvb_store::Select::Kinds(&["github.mirror_observed"]),
+        dvb_store::Select::Kinds(&[
+            "github.mirror_observed",
+            "project.repo_unreachable",
+            "project.repo_changed",
+        ]),
     )? {
-        if let (
-            Some(project),
+        let Some(project) = event.project else {
+            continue;
+        };
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "the store selects only these three kinds"
+        )]
+        match event.kind {
             EventKind::GithubMirrorObserved {
                 goal,
                 task,
                 mirrored,
                 detail,
-            },
-        ) = (event.project, event.kind)
-        {
-            observations.insert((project, goal, task), (mirrored, detail));
+            } => {
+                if mirrored {
+                    observations.unreachable.remove(&project);
+                }
+                observations
+                    .items
+                    .insert((project, goal, task), (mirrored, detail));
+            }
+            EventKind::ProjectRepoUnreachable { .. } => {
+                observations.unreachable.insert(project);
+            }
+            EventKind::ProjectRepoChanged { .. } => {
+                observations.unreachable.remove(&project);
+            }
+            _ => {}
         }
     }
     let mut healthy = project_jobs(e, forge.as_ref(), &mut retries, affected).await;
@@ -498,6 +549,7 @@ fn relevant(event: &dvb_core::Event) -> bool {
         event.kind,
         EventKind::ProjectAdded { .. }
             | EventKind::ProjectResumed { .. }
+            | EventKind::ProjectRepoChanged { .. }
             | EventKind::GoalStated { .. }
             | EventKind::PlanProposed { .. }
             | EventKind::PlanCancelled { .. }

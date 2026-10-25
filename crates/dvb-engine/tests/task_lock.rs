@@ -73,6 +73,7 @@ fn no(what: &str) -> ForgeError {
     ForgeError {
         rate_limit: None,
         retryable: false,
+        unreachable: false,
         detail: format!("{what} is not used here"),
     }
 }
@@ -93,6 +94,16 @@ impl Forge for Gate {
                 retryable: false,
             },
         }
+    }
+
+    async fn repository_id(&self, _: &Repo) -> Result<Option<u64>, ForgeError> {
+        Err(no("repository_id"))
+    }
+    fn repoint_mirror(&self, _: &Repo, _: &Repo) -> Result<(), ForgeError> {
+        Err(no("repoint_mirror"))
+    }
+    fn forget_mirror(&self, _: &Repo) -> Result<(), ForgeError> {
+        Err(no("forget_mirror"))
     }
 
     async fn mirror_project(&self, _: &Repo) -> Result<(), ForgeError> {
@@ -184,6 +195,7 @@ impl Forge for Gate {
                 MergeError::Forge(ForgeError {
                     rate_limit: None,
                     retryable: true,
+                    unreachable: false,
                     detail: "502".into(),
                 })
             } else {
@@ -197,6 +209,7 @@ impl Forge for Gate {
                 MergeError::Forge(ForgeError {
                     rate_limit: None,
                     retryable: false,
+                    unreachable: false,
                     detail: e.to_string(),
                 })
             })?
@@ -239,6 +252,7 @@ impl Forge for Gate {
             return Err(ForgeError {
                 rate_limit: None,
                 retryable: true,
+                unreachable: false,
                 detail: "transport error".into(),
             });
         }

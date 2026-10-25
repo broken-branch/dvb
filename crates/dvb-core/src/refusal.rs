@@ -70,6 +70,14 @@ pub enum RefusalCode {
     GoalStarted,
     /// The goal order would wait on itself.
     GoalOrderCycle,
+    /// The new repository name reaches no repository through the App's
+    /// installation, or a different one from the project's.
+    RepositoryMismatch,
+    /// A project with running or open tasks, or a run still working, is not
+    /// removed; `tasks` names them and the detail says how to stop each.
+    ProjectBusy {
+        tasks: Vec<crate::TaskId>,
+    },
 }
 
 impl RefusalCode {
@@ -115,7 +123,9 @@ impl RefusalCode {
             | RefusalCode::InvalidProjectName
             | RefusalCode::PlanNotParked
             | RefusalCode::GoalStarted
-            | RefusalCode::GoalOrderCycle => 409,
+            | RefusalCode::GoalOrderCycle
+            | RefusalCode::RepositoryMismatch
+            | RefusalCode::ProjectBusy { .. } => 409,
         }
     }
 }

@@ -167,18 +167,12 @@ pub(super) fn start_run(
     e: &AppState,
     task: &TaskId,
     actor: Actor,
-    command: &str,
-    cmd: Command,
+    decision: crate::Decision<'_>,
     a: &RunAssignment,
     from: Option<RunId>,
+    allowed: impl FnOnce(&Projections) -> Result<(), Refusal>,
 ) -> Result<TaskState, Fail> {
-    let state = e.decide(
-        e.proj(),
-        task,
-        actor,
-        crate::Decision::new(command, cmd),
-        |_| Ok(()),
-    )?;
+    let state = e.decide(e.proj(), task, actor, decision, allowed)?;
     if e.proj().runs.contains_key(&a.run) {
         launch_run(e, a, from);
     }

@@ -825,3 +825,86 @@ async fn socket_prepared_fields_are_reused_across_card_updates() {
         .count();
     assert_eq!(field_reads, 3);
 }
+
+#[tokio::test]
+async fn socket_repointed_receipts_update_the_renamed_repositorys_board_and_create_nothing() {
+    let server = MockServer::start().await;
+    let forge = gateway(&server).await;
+    let graph = mount_graph(&server, BoardFixture::default()).await;
+    let renamed = dvb_core::forge::Repo("example-org/renamed".into());
+    let milestone = json!({
+        "number":3,
+        "title":"Ship feature",
+        "state":"open",
+        "description":"<!-- dvb goal g1 -->\nTwo independently reviewed PRs"
+    });
+    for (name, milestones) in [("project", json!([])), ("renamed", json!([milestone]))] {
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/example-org/{name}")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"private":true,"node_id":"REPO"})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/example-org/{name}/milestones")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(milestones))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path("/repos/example-org/project/milestones"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({"number":3})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/example-org/renamed/milestones/3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"number":3})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    forge.mirror_project(&repo()).await.unwrap();
+    assert_eq!(forge.mirror_goal(&repo(), &goal()).await.unwrap(), 3);
+    forge.mirror_task(&repo(), &task()).await.unwrap();
+    let before = server.received_requests().await.unwrap().len();
+
+    forge.repoint_mirror(&repo(), &renamed).unwrap();
+    forge.mirror_project(&renamed).await.unwrap();
+    assert_eq!(forge.mirror_goal(&renamed, &goal()).await.unwrap(), 3);
+    forge.mirror_task(&renamed, &task()).await.unwrap();
+
+    let after = server.received_requests().await.unwrap().split_off(before);
+    let creates = after
+        .iter()
+        .filter(|r| {
+            let created = r.method == "POST" && r.url.path().ends_with("/milestones");
+            let query = serde_json::from_slice::<Value>(&r.body).unwrap_or_default()["query"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            created
+                || [
+                    "createProjectV2(input:",
+                    "createProjectV2Field",
+                    "addProjectV2DraftIssue",
+                    "addProjectV2ItemById",
+                ]
+                .iter()
+                .any(|operation| query.contains(operation))
+        })
+        .count();
+    assert_eq!(
+        creates, 0,
+        "a repointed mirror creates no milestone, board or card"
+    );
+    assert!(
+        after
+            .iter()
+            .all(|r| !r.url.path().starts_with("/repos/example-org/project")),
+        "nothing is read or written under the old name"
+    );
+    let fixture = graph.0.lock().unwrap();
+    assert_eq!(fixture.items.len(), 1);
+    assert_eq!(fixture.title, "dvb: example-org/renamed");
+}

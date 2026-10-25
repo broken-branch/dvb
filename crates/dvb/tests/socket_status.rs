@@ -390,6 +390,7 @@ async fn socket_status_lists_each_counted_task_once_with_its_stopped_question() 
                         to,
                     },
                     EventKind::TaskStopped {
+                        update: false,
                         task,
                         reason: Some("review cap".into()),
                     },

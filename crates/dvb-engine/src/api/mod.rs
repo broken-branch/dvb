@@ -10,6 +10,8 @@ mod models;
 mod only;
 mod projects;
 mod projects_add;
+mod projects_remove;
+mod projects_repo;
 pub(crate) mod questions;
 mod report;
 mod roles;
@@ -87,6 +89,8 @@ fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(projects_add::add_project))
         .routes(routes!(projects::get_project))
         .routes(routes!(projects::set_project_checks))
+        .routes(routes!(projects_repo::set_project_repo))
+        .routes(routes!(projects_remove::remove_project))
         .routes(routes!(projects::project_checks_history))
         .routes(routes!(projects::pause_project))
         .routes(routes!(projects::resume_project))

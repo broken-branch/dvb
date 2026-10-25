@@ -1552,3 +1552,44 @@ async fn socket_a_personal_account_lists_and_probes_its_own_repositories_and_cre
             && path != "/graphql"
     }));
 }
+
+#[tokio::test]
+async fn socket_a_renamed_repositorys_token_refusal_is_unreachable_and_its_id_is_still_read() {
+    let server = MockServer::start().await;
+    let forge = gateway(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/app/installations/7/access_tokens"))
+        .and(body_json(json!({"repositories":["project"]})))
+        .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+            "message":"There is at least one repository that does not exist or is not accessible to the parent installation."
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let error = forge.visibility(&repo()).await.unwrap_err();
+    assert!(error.unreachable && !error.retryable, "{error:?}");
+    assert_eq!(error.detail, "GitHub HTTP 422");
+
+    // The installation-wide token reads both names; GitHub follows the old one.
+    response(
+        &server,
+        "GET",
+        "/repos/example-org/project",
+        200,
+        json!({"id":41}),
+    )
+    .await;
+    response(
+        &server,
+        "GET",
+        "/repos/example-org/missing",
+        404,
+        json!({"message":"Not Found"}),
+    )
+    .await;
+    assert_eq!(forge.repository_id(&repo()).await.unwrap(), Some(41));
+    let missing = dvb_core::forge::Repo("example-org/missing".into());
+    assert_eq!(forge.repository_id(&missing).await.unwrap(), None);
+    let outside = dvb_core::forge::Repo("other-org/project".into());
+    assert_eq!(forge.repository_id(&outside).await.unwrap(), None);
+}

@@ -153,10 +153,10 @@ pub(super) async fn repair(
         e,
         task,
         Actor::Engine,
-        "repair branch",
-        Command::RepairBranch(a.clone()),
+        crate::Decision::new("repair branch", Command::RepairBranch(a.clone())),
         &a,
         None,
+        |_| Ok(()),
     )?;
     Ok(Next::Idle)
 }

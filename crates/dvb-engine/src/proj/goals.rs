@@ -457,6 +457,7 @@ impl Projections {
                             },
                             problem_at: None,
                             held: false,
+                            update_stop: None,
                             merged_at: None,
                             view: TaskView {
                                 after: t.after.clone(),

@@ -289,6 +289,39 @@ describe('snapshot races', () => {
     send.close();
   });
 });
+it('drops a project removed elsewhere, such as by the CLI, from the lists when its event arrives', async () => {
+  let send!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      send = c;
+    },
+  });
+  let projects = [project];
+  const fetcher = vi.fn<typeof fetch>(async (input) => {
+    const url = String(input);
+    if (url.startsWith('/events?'))
+      return new Response(body, { headers: { 'dvb-version': '0.1.0' } });
+    if (url.startsWith('/events/recent')) return json(page());
+    if (url === '/version') return json({ version: '0.1.0' });
+    if (url === '/projects') return json(projects);
+    if (url === '/status') return json({ running: 0, needs_you: 0 });
+    if (url === '/settings') return json({ values: {} });
+    if (url === '/models') return json({ models: [] });
+    return json([]);
+  });
+  const live = createLiveSource({ base: '', fetch: fetcher, version: '0.1.0' });
+  live.start();
+  await waitFor(() => expect(live.getSnapshot().projects).toHaveLength(1));
+  await waitFor(() =>
+    expect(fetcher.mock.calls.some(([url]) => url === '/events?after=100')).toBe(true),
+  );
+  projects = [];
+  const removed = event(101, 'project.removed', { name: project.name, repo: project.repo });
+  send.enqueue(new TextEncoder().encode(`id: 101\ndata: ${JSON.stringify(removed)}\n\n`));
+  await waitFor(() => expect(live.getSnapshot().projects).toEqual([]));
+  live.dispose();
+  send.close();
+});
 describe('transport', () => {
   const started: Event = {
     id: 21,

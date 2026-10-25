@@ -156,6 +156,21 @@ pub struct NewProject {
     pub ci: CiMode,
 }
 
+/// The project's repository under its new name, after a rename or transfer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProjectRepo {
+    /// A GitHub `owner/name`.
+    pub repo: String,
+}
+
+/// A project removed from this install, and its files on this machine that
+/// could not be freed, each as `<path>: <error>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProjectRemoval {
+    pub project: ProjectView,
+    pub not_freed: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct FinishedWork {
     pub text: String,
@@ -780,13 +795,25 @@ pub struct UpdateInfo {
     pub available: Option<String>,
     /// Present while an update is under way.
     pub updating: Option<UpdateStatus>,
+    /// The latest handover's interrupted task runs and their recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed: Option<UpdateCompletion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UpdateCompletion {
+    pub to: String,
+    pub stopped: u32,
+    pub resumed: u32,
+    /// Update stops still waiting to resume (including startup reconciliation).
+    pub pending: u32,
 }
 
 /// An update that has started: waiting for runs to finish, then switching.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct UpdateStatus {
     pub to: String,
-    /// Runs still going; the update waits for them (stop them to go on).
+    /// Runs still going; drain waits up to 30 seconds, then stops them.
     pub runs_active: u32,
 }
 

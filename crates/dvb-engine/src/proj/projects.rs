@@ -1,7 +1,7 @@
 use super::Projections;
 use dvb_core::api::{FinishedWork, GoalState, ProjectView};
 use dvb_core::roles::{HireRecord, HireStatus, RoleRecord};
-use dvb_core::{Event, EventId, EventKind, GoalId, QuestionId, RoleId, Timestamp};
+use dvb_core::{Event, EventId, EventKind, GoalId, ProjectId, QuestionId, RoleId, Timestamp};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
@@ -59,6 +59,16 @@ impl Project {
 }
 
 impl Projections {
+    /// A removed project leaves every view with its goals, tasks, runs and
+    /// questions, so nothing schedules, counts or shows them again.
+    fn remove_project(&mut self, id: &ProjectId) {
+        self.projects.remove(id);
+        self.goals.retain(|_, g| &g.project != id);
+        self.tasks.retain(|_, t| &t.view.project != id);
+        self.runs.retain(|_, r| &r.project != id);
+        self.questions.retain(|_, q| &q.view.project != id);
+    }
+
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "only the kinds this fold reads have an arm"
@@ -122,6 +132,16 @@ impl Projections {
                 let missing = matches!(e.kind, EventKind::ProjectRulesetMissing {});
                 if let Some(p) = project.and_then(|id| self.projects.get_mut(&id)) {
                     p.ruleset_missing = missing;
+                }
+            }
+            EventKind::ProjectRepoChanged { to, .. } => {
+                if let Some(p) = project.and_then(|id| self.projects.get_mut(&id)) {
+                    p.view.repo.clone_from(to);
+                }
+            }
+            EventKind::ProjectRemoved { .. } => {
+                if let Some(id) = project {
+                    self.remove_project(&id);
                 }
             }
             EventKind::ProjectIssuesFound(counts) => {

@@ -154,6 +154,8 @@ pub struct Decision<'a> {
     pub pre: Vec<EventKind>,
     pub waiting: Option<EventKind>,
     pub question: Option<EventKind>,
+    /// Mark a successful stop as belonging to the update, atomically.
+    pub update_stop: bool,
 }
 
 impl<'a> Decision<'a> {
@@ -164,6 +166,7 @@ impl<'a> Decision<'a> {
             pre: Vec::new(),
             waiting: None,
             question: None,
+            update_stop: false,
         }
     }
 }
@@ -830,6 +833,7 @@ impl Engine {
             pre,
             waiting,
             question,
+            update_stop,
         } = decision;
         if let Err(r) = allowed(&proj) {
             let project = proj.tasks.get(task).map(|t| t.view.project.clone());
@@ -854,7 +858,14 @@ impl Engine {
         let project = t.view.project.clone();
         let ctx = self.context(&proj, &t, &cmd, self.clock.now())?;
         match decide(&t.view.state, cmd, &ctx) {
-            Ok(kinds) => {
+            Ok(mut kinds) => {
+                if update_stop {
+                    for kind in &mut kinds {
+                        if let EventKind::TaskStopped { update, .. } = kind {
+                            *update = true;
+                        }
+                    }
+                }
                 let stops = kinds
                     .iter()
                     .any(|k| matches!(k, EventKind::TaskStopped { .. }));

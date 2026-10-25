@@ -14,7 +14,12 @@ import type { ChartMove, Connection, DataStore, Event, EventFilter, Settings } f
 type Schemas = components['schemas'];
 type Call = ReturnType<typeof createClient>['call'];
 /** Every engine and desk call; their types are DataStore's methods. */
-function endpoints(call: Call, desk: Call, memoryChanged: (settings: Settings) => void) {
+function endpoints(
+  call: Call,
+  desk: Call,
+  memoryChanged: (settings: Settings) => void,
+  projectRemoved: (id: Schemas['ProjectId']) => void,
+) {
   return {
     eventPage: (filter?: EventFilter) => call('/events/recent', 'get', { query: filter }),
     run: (id: Schemas['RunId']) => call('/runs/{id}', 'get', { params: { id } }),
@@ -68,6 +73,12 @@ function endpoints(call: Call, desk: Call, memoryChanged: (settings: Settings) =
       call('/projects/{id}/pause', 'post', { params: { id } }),
     resumeProject: (id: Schemas['ProjectId']) =>
       call('/projects/{id}/resume', 'post', { params: { id } }),
+    removeProject: async (id: Schemas['ProjectId']) => {
+      const result = await call('/projects/{id}/remove', 'post', { params: { id } });
+      // The rail and lists drop the project before its event arrives.
+      if (result.ok) projectRemoved(id);
+      return result;
+    },
     stateGoal: (id: Schemas['ProjectId'], body: Schemas['NewGoal']) =>
       call('/projects/{id}/goals', 'post', { params: { id }, body }),
     /** Asks the orchestrator to propose the next goal from the open trusted issues. */
@@ -150,10 +161,15 @@ export function createLiveSource(
       source.set({ connection: { state: 'reconnecting' } });
   }
   source.set(
-    endpoints(call, deskClient.call, (settings) => {
-      settingsGeneration++;
-      source.set({ settings });
-    }),
+    endpoints(
+      call,
+      deskClient.call,
+      (settings) => {
+        settingsGeneration++;
+        source.set({ settings });
+      },
+      (id) => source.set({ projects: get().projects.filter((p) => p.id !== id) }),
+    ),
   );
   // Refreshes are serialized. Events received during a read schedule another
   // pass; no delayed response or historical event can replace newer state.
@@ -259,6 +275,8 @@ export function createLiveSource(
   }
   function changed(e: Event): SnapshotKey[] {
     if (e.kind === 'project.added') return ['projects', 'roles'];
+    if (e.kind === 'project.removed')
+      return ['projects', 'roles', 'goals', 'tasks', 'questions', 'status'];
     if (e.kind === 'project.paused' || e.kind === 'project.resumed') return ['projects'];
     if (e.kind.startsWith('role.')) return ['roles'];
     if (e.kind.startsWith('hire.')) return ['hires'];

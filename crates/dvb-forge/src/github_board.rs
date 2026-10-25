@@ -148,6 +148,31 @@ fn board_node_data(response: Value) -> Result<Value, ForgeError> {
     graphql_data(response)
 }
 
+/// Receipts are keyed by the repository's name: `<owner/name>` or `<owner/name>:<key>`.
+fn repoint(ids: &mut MirrorIds, from: &str, to: &str) {
+    if let Some(board) = ids.boards.remove(from) {
+        ids.boards.insert(to.into(), board);
+    }
+    if let Some(board) = ids.forbidden_board_links.remove(from) {
+        ids.forbidden_board_links.insert(to.into(), board);
+    }
+    rekey(&mut ids.cards, from, to);
+    rekey(&mut ids.milestones, from, to);
+}
+
+fn rekey<V>(map: &mut std::collections::BTreeMap<String, V>, from: &str, to: &str) {
+    let prefix = format!("{from}:");
+    let moved: Vec<(String, String)> = map
+        .keys()
+        .filter_map(|key| Some((key.clone(), format!("{to}:{}", key.strip_prefix(&prefix)?))))
+        .collect();
+    for (old, new) in moved {
+        if let Some(value) = map.remove(&old) {
+            map.insert(new, value);
+        }
+    }
+}
+
 fn forget_board(ids: &mut MirrorIds, repo: &str) {
     if let Some(board) = ids.boards.remove(repo) {
         ids.fields.remove(&board);
@@ -424,6 +449,18 @@ impl GitHub {
                 ),
                 None => Ok(()),
             }
+        })
+    }
+
+    pub(super) fn repoint_ids(&self, from: &str, to: &str) -> Result<(), ForgeError> {
+        self.save_ids(|ids| repoint(ids, from, to))
+    }
+
+    pub(super) fn forget_ids(&self, repo: &str) -> Result<(), ForgeError> {
+        self.save_ids(|ids| {
+            forget_board(ids, repo);
+            let prefix = format!("{repo}:");
+            ids.milestones.retain(|key, _| !key.starts_with(&prefix));
         })
     }
 
@@ -1462,5 +1499,65 @@ mod tests {
             error.detail,
             "GitHub board response is unreadable (updateProjectV2 FORBIDDEN)"
         );
+    }
+
+    #[tokio::test]
+    async fn a_removed_projects_receipts_are_forgotten_without_a_request() {
+        use bytes::Bytes;
+        use http::{Request, Response};
+        use http_body_util::Full;
+        use std::sync::{Arc, Mutex};
+
+        let requests = Arc::new(Mutex::new(0));
+        let seen = requests.clone();
+        let service = tower::service_fn(move |_: Request<octocrab::OctoBody>| {
+            *seen.lock().unwrap() += 1;
+            std::future::ready(Ok::<_, std::convert::Infallible>(
+                Response::builder()
+                    .status(500)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            ))
+        });
+        let app = octocrab::OctocrabBuilder::new_empty()
+            .with_service(service)
+            .with_auth(octocrab::AuthState::None)
+            .build()
+            .unwrap();
+        let mut forge = crate::GitHub::with_app_client(
+            app,
+            7,
+            "org".into(),
+            GithubAccountType::Organization,
+            Arc::new(crate::gateway::Wait::default()),
+        )
+        .unwrap();
+        let state = tempfile::tempdir().unwrap();
+        forge.state_dir = Some(state.path().to_owned());
+        let receipts = |repo: &str, board: &str| {
+            let mut ids = crate::github::MirrorIds::default();
+            ids.boards.insert(repo.into(), board.into());
+            ids.forbidden_board_links.insert(repo.into(), board.into());
+            ids.cards
+                .insert(format!("{repo}:t1"), format!("{board}-CARD"));
+            ids.milestones.insert(format!("{repo}:g1"), 3);
+            ids
+        };
+        let (mut ids, kept) = (receipts("org/gone", "B1"), receipts("org/kept", "B2"));
+        ids.boards.extend(kept.boards.clone());
+        ids.forbidden_board_links
+            .extend(kept.forbidden_board_links.clone());
+        ids.cards.extend(kept.cards.clone());
+        ids.milestones.extend(kept.milestones.clone());
+        forge.mirror_ids = Mutex::new(ids);
+
+        dvb_core::forge::Forge::forget_mirror(&forge, &Repo("org/gone".into())).unwrap();
+
+        let saved: Value = serde_json::from_slice(
+            &std::fs::read(state.path().join("github-mirror.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved, serde_json::to_value(&kept).unwrap());
+        assert_eq!(*requests.lock().unwrap(), 0, "no request reaches GitHub");
     }
 }

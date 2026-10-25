@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.1.67"
+    "version": "0.1.68"
   },
   "paths": {
     "/events": {
@@ -2345,6 +2345,138 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/IssueCounts"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Refused, with a code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Refused, with a code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Refused, with a code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{id}/remove": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Refused while the project has running or open tasks, or a run still working.\nFrees its run directories, mirror, toolchain cache and mirror receipts; makes\nno GitHub call.",
+        "operationId": "remove_project",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ProjectId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The removed project and the files that could not be freed; records `project.removed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectRemoval"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Refused, with a code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Refused, with a code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Refused, with a code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects/{id}/repo": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Only the same repository, read by its id through the App's installation, is\naccepted. Goals, tasks and history stay; the mirror's receipts move with it.",
+        "operationId": "set_project_repo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ProjectId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectRepo"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The project under its repository's new name; records `project.repo_changed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectView"
                 }
               }
             }
@@ -5161,6 +5293,98 @@
           },
           {
             "type": "object",
+            "description": "The owner pointed the project at its repository's new name, checked\nto be the same repository; earlier events keep the name they had.",
+            "required": [
+              "payload",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "project.repo_changed"
+                ]
+              },
+              "payload": {
+                "type": "object",
+                "description": "The owner pointed the project at its repository's new name, checked\nto be the same repository; earlier events keep the name they had.",
+                "required": [
+                  "from",
+                  "to"
+                ],
+                "properties": {
+                  "from": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "GitHub gave no token for the project's repository by its saved name\n(HTTP 422). Recorded once, until a mirror write succeeds or the\nproject is repointed.",
+            "required": [
+              "payload",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "project.repo_unreachable"
+                ]
+              },
+              "payload": {
+                "type": "object",
+                "description": "GitHub gave no token for the project's repository by its saved name\n(HTTP 422). Recorded once, until a mirror write succeeds or the\nproject is repointed.",
+                "required": [
+                  "repo"
+                ],
+                "properties": {
+                  "repo": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The owner removed the project from this install: it leaves every\nview and takes no goal. Its earlier events stay; GitHub is untouched.",
+            "required": [
+              "payload",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "project.removed"
+                ]
+              },
+              "payload": {
+                "type": "object",
+                "description": "The owner removed the project from this install: it leaves every\nview and takes no goal. Its earlier events stay; GitHub is untouched.",
+                "required": [
+                  "name",
+                  "repo"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "repo": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
             "required": [
               "payload",
               "kind"
@@ -6029,6 +6253,10 @@
                   },
                   "task": {
                     "$ref": "#/components/schemas/TaskId"
+                  },
+                  "update": {
+                    "type": "boolean",
+                    "description": "Resume this stop once after update handover or rollback."
                   }
                 }
               }
@@ -8658,6 +8886,38 @@
         "type": "string",
         "description": "A project."
       },
+      "ProjectRemoval": {
+        "type": "object",
+        "description": "A project removed from this install, and its files on this machine that\ncould not be freed, each as `<path>: <error>`.",
+        "required": [
+          "project",
+          "not_freed"
+        ],
+        "properties": {
+          "not_freed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "project": {
+            "$ref": "#/components/schemas/ProjectView"
+          }
+        }
+      },
+      "ProjectRepo": {
+        "type": "object",
+        "description": "The project's repository under its new name, after a rename or transfer.",
+        "required": [
+          "repo"
+        ],
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "A GitHub `owner/name`."
+          }
+        }
+      },
       "ProjectView": {
         "type": "object",
         "required": [
@@ -9523,6 +9783,43 @@
                 "enum": [
                   "GOAL_ORDER_CYCLE"
                 ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The new repository name reaches no repository through the App's\ninstallation, or a different one from the project's.",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "REPOSITORY_MISMATCH"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A project with running or open tasks, or a run still working, is not\nremoved; `tasks` names them and the detail says how to stop each.",
+            "required": [
+              "tasks",
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "PROJECT_BUSY"
+                ]
+              },
+              "tasks": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/TaskId"
+                }
               }
             }
           }
@@ -10687,6 +10984,36 @@
         "format": "int64",
         "description": "Milliseconds since the Unix epoch, UTC."
       },
+      "UpdateCompletion": {
+        "type": "object",
+        "required": [
+          "to",
+          "stopped",
+          "resumed",
+          "pending"
+        ],
+        "properties": {
+          "pending": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Update stops still waiting to resume (including startup reconciliation).",
+            "minimum": 0
+          },
+          "resumed": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "stopped": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "to": {
+            "type": "string"
+          }
+        }
+      },
       "UpdateInfo": {
         "type": "object",
         "required": [
@@ -10697,6 +11024,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "completed": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/UpdateCompletion",
+                "description": "The latest handover's interrupted task runs and their recovery."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "current": {
@@ -10726,7 +11064,7 @@
           "runs_active": {
             "type": "integer",
             "format": "int32",
-            "description": "Runs still going; the update waits for them (stop them to go on).",
+            "description": "Runs still going; drain waits up to 30 seconds, then stops them.",
             "minimum": 0
           },
           "to": {

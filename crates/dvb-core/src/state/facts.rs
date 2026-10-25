@@ -319,6 +319,9 @@ impl TaskFacts {
             | EventKind::ProjectIssuesFound(..)
             | EventKind::ProjectRulesetMissing {}
             | EventKind::ProjectRulesetInstalled {}
+            | EventKind::ProjectRepoChanged { .. }
+            | EventKind::ProjectRepoUnreachable { .. }
+            | EventKind::ProjectRemoved { .. }
             | EventKind::GithubMirrorObserved { .. }
             | EventKind::QuestionOpened { .. }
             | EventKind::QuestionAnswered { .. }

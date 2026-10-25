@@ -299,6 +299,7 @@ mod tests {
             ForgeError {
                 rate_limit: None,
                 retryable: true,
+                unreachable: false,
                 detail: "lost".into(),
             },
         );
@@ -363,6 +364,7 @@ mod tests {
                 "close_issue",
                 dvb_core::forge::ForgeError {
                     retryable,
+                    unreachable: false,
                     detail: if retryable {
                         "temporary"
                     } else {
@@ -412,6 +414,7 @@ mod tests {
             "close_issue",
             ForgeError {
                 retryable: true,
+                unreachable: false,
                 detail: "rate limited".into(),
                 rate_limit: Some(dvb_core::forge::RateLimit {
                     reset: Some(dvb_core::Timestamp(90_000)),

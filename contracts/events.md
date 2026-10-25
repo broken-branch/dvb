@@ -28,6 +28,9 @@ from the payload or the records it names; null entries are hidden from the feed.
 | `project.issues_found` | open, trusted, labels: [{label, open}] (the open issues when the project was added) |
 | `project.ruleset_missing` | — (GitHub allows no ruleset on the repository, a private one on GitHub Free; dvb goes on without it; recorded once when it starts) |
 | `project.ruleset_installed` | — (a project that had no ruleset got dvb's when its checks were set) |
+| `project.repo_changed` | from, to (the owner pointed the project at its repository's new name, the same repository; earlier events keep the old name) |
+| `project.repo_unreachable` | repo (GitHub gave no token for the repository by its saved name, HTTP 422; recorded once until a mirror write succeeds or the project is repointed) |
+| `project.removed` | name, repo (the owner removed the project from this install; it leaves every view and takes no goal, its earlier events stay and nothing changes on GitHub) |
 | `role.added` | role record: id, slug, name, job, lane, lead, reports_to, reviewed_by, review_instructions |
 | `role.changed` | role record, restored_from? (the event whose value it restores) |
 | `role.removed` | role record |
@@ -49,7 +52,7 @@ from the payload or the records it names; null entries are hidden from the feed.
 | `command.refused` | command, code (and the code's fields), detail |
 | `task.started` | task, run, resume, branch_repair? (the run's `run.started` has the rest) |
 | `task.waiting` | task, model, effort, reason, routine? (the start marked the task routine) (the orchestrator's start, refused for the cap on concurrent runs; the engine starts it as asked when a run ends) |
-| `task.stopped` | task, reason (the owner's `dvb stop --reason`, or the engine's; an owner reason wakes no orchestrator for the stop) |
+| `task.stopped` | task, update? (true resumes this stop once after update or rollback), reason (the owner's `dvb stop --reason`, or the engine's; an owner reason wakes no orchestrator for the stop) |
 | `task.resumed` | task, reason (a retry of a failed task: "retried after it failed") |
 | `task.cancelled` | task, reason |
 | `task.done` | task, reason |

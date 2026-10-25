@@ -276,8 +276,8 @@ impl dvb_core::Clock for DrainClock {
 
 /// A run still going at the drain's bound is
 /// stopped the owner's way before the exec (resumable, the update as its
-/// reason), so no run spans the update; the target keeps it stopped with its
-/// workspace and branch for the resume.
+/// reason), so no run spans the update; the target resumes it once with its
+/// workspace and branch, held by the project's pause.
 #[tokio::test]
 async fn a_run_still_going_at_the_bound_is_stopped_before_the_exec() {
     use dvb_core::{Command as TaskCommand, ProjectId, RunId, TaskId, TaskState};
@@ -295,9 +295,14 @@ async fn a_run_still_going_at_the_bound_is_stopped_before_the_exec() {
         },
     )
     .unwrap();
+    e.manual_dispatch();
     let (p, t, r) = (ProjectId::new("p"), TaskId::new("t"), RunId::new("stuck"));
     e.append_checked(Some(&p), Actor::Engine, |_, _| {
-        Ok(support::events::approved_task_events())
+        let mut events = support::events::approved_task_events();
+        let (roles, hires) = support::events::default_role_hire_events();
+        events.extend(roles);
+        events.extend(hires);
+        Ok(events)
     })
     .unwrap();
     e.decide(
@@ -333,6 +338,10 @@ async fn a_run_still_going_at_the_bound_is_stopped_before_the_exec() {
     let workspace = e.cfg.paths.work.join(r.as_str()).join("ws");
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::write(workspace.join("work-in-progress"), "keep this work").unwrap();
+    e.append_checked(Some(&p), Actor::Owner, |_, _| {
+        Ok(vec![EventKind::ProjectPaused {}])
+    })
+    .unwrap();
     let l = Layout::of(&cfg);
     let k = keys();
     let to = next_version(dvb_core::VERSION);
@@ -390,7 +399,7 @@ async fn a_run_still_going_at_the_bound_is_stopped_before_the_exec() {
                     dvb_engine::EngineOptions {
                         forge: None,
                         launcher: Some(Arc::new(support::launcher::FakeLauncher {
-                            forbid_start: Some("the stopped run must wait for its resume"),
+                            forbid_start: Some("the resumed run must wait for unpause"),
                             forbid_stop: Some("the run was stopped before the exec"),
                             forbid_state: Some("the run ended before the exec"),
                             ..Default::default()
@@ -441,11 +450,32 @@ async fn a_run_still_going_at_the_bound_is_stopped_before_the_exec() {
         .await
         .unwrap();
     support::wait::SLOW
-        .until("the stopped task to be checked", || {
+        .until("the update's task to reconcile into the pause", || {
             next.proj().tasks[&t].view.state == stopped
         })
         .await;
-    assert_eq!(next.proj().tasks[&t].facts.run.as_ref(), Some(&r));
+    assert_eq!(next.proj().live_runs().count(), 0);
+    assert!(next.proj().tasks[&t].update_stop.is_some());
+    assert_eq!(protocol::completion(&next).unwrap().pending, 1);
+    next.append_checked(Some(&p), Actor::Owner, |_, _| {
+        Ok(vec![EventKind::ProjectResumed {}])
+    })
+    .unwrap();
+    dvb_engine::dispatch::step_now(&next, &t).await.unwrap();
+    next.append_checked(Some(&p), Actor::Owner, |_, _| {
+        Ok(vec![EventKind::ProjectPaused {}])
+    })
+    .unwrap();
+    assert_eq!(next.proj().tasks[&t].view.state, TaskState::Preparing);
+    assert_ne!(next.proj().tasks[&t].facts.run.as_ref(), Some(&r));
+    assert!(next.proj().tasks[&t].update_stop.is_none());
+    assert_eq!(
+        support::events::all(&next)
+            .iter()
+            .filter(|ev| matches!(ev.kind, EventKind::TaskResumed { .. }))
+            .count(),
+        1
+    );
     assert_eq!(next.proj().tasks[&t].branch.as_deref(), Some("dvb/t-1"));
     assert_eq!(
         next.proj().runs[&r].assignment.base.as_deref(),
@@ -454,6 +484,219 @@ async fn a_run_still_going_at_the_bound_is_stopped_before_the_exec() {
     assert_eq!(
         std::fs::read_to_string(workspace.join("work-in-progress")).unwrap(),
         "keep this work"
+    );
+}
+
+/// The same recovery runs after a successful handover and a rollback.
+#[tokio::test]
+async fn update_restarts_only_its_own_stops_once_even_in_a_paused_project() {
+    use dvb_core::{Command as TaskCommand, ProjectId, RunId, TaskId, TaskState};
+    use dvb_engine::update::handover::{Next, prepare, recover};
+    use dvb_engine::{Decision, dispatch};
+    use std::sync::Arc;
+
+    for rollback in [false, true] {
+        for (stop, later_stop) in [
+            (None, None),
+            (Some(Actor::Owner), None),
+            (Some(Actor::Engine), None),
+            (None, Some(Actor::Owner)),
+            (None, Some(Actor::Engine)),
+        ] {
+            let resumes = stop.is_none() && later_stop.is_none();
+            let dir = tempfile::tempdir().unwrap();
+            let cfg = Config::dev(dir.path(), "dvb".into());
+            let e = Engine::open(cfg.clone(), Default::default()).unwrap();
+            e.manual_dispatch();
+            let (p, t, r) = (ProjectId::new("p"), TaskId::new("t"), RunId::new("before"));
+            e.append_checked(Some(&p), Actor::Engine, |_, _| {
+                let mut events = support::events::approved_task_events();
+                let (roles, hires) = support::events::default_role_hire_events();
+                events.extend(roles);
+                events.extend(hires);
+                Ok(events)
+            })
+            .unwrap();
+            e.decide(
+                e.proj(),
+                &t,
+                Actor::Engine,
+                Decision::new(
+                    "start",
+                    TaskCommand::Start(
+                        support::assignment::Assignment::new(r.clone())
+                            .task(Some(t.clone()))
+                            .base(Some("base".into()))
+                            .build(),
+                    ),
+                ),
+                |_| Ok(()),
+            )
+            .unwrap();
+            if let Some(actor) = stop.clone() {
+                // Even the old update wording is not an update marker.
+                e.decide(
+                    e.proj(),
+                    &t,
+                    actor,
+                    Decision::new(
+                        "stop",
+                        TaskCommand::Stop(Some(
+                            "stopped for the update to dvb 99.0.0; resume it to carry on".into(),
+                        )),
+                    ),
+                    |_| Ok(()),
+                )
+                .unwrap();
+                e.end_run(&r, dvb_core::event::EndReason::Stopped, None)
+                    .unwrap();
+            }
+            dispatch::stop_for_update(&e, "99.0.0").await;
+            if let Some(actor) = later_stop {
+                // A second stop is refused. Resume and stop again to record
+                // an accepted owner/other-engine stop after the update's one.
+                dispatch::resume(&e, &t, Actor::Owner).await.unwrap();
+                dispatch::stop(&e, &t, actor).await.unwrap();
+            }
+            e.append_checked(Some(&p), Actor::Owner, |_, _| {
+                Ok(vec![EventKind::ProjectPaused {}])
+            })
+            .unwrap();
+            let l = Layout::of(&cfg);
+            std::fs::create_dir_all(l.versions()).unwrap();
+            prepare(&l, &e.store, dvb_core::VERSION, "99.0.0").unwrap();
+            let migrate = |db: &Path| {
+                if rollback {
+                    Err(dvb_engine::update::handover::HandoverError::Message(
+                        "test rollback".into(),
+                    ))
+                } else {
+                    dvb_store::Store::open(db).map_err(Into::into)
+                }
+            };
+            let next = recover(&l, "99.0.0", true, &migrate).unwrap();
+            assert_eq!(
+                next,
+                if rollback {
+                    Next::Exec(l.version_bin(dvb_core::VERSION).unwrap())
+                } else {
+                    Next::Run
+                }
+            );
+            drop(e);
+            let next = Engine::open(
+                cfg.clone(),
+                dvb_engine::EngineOptions {
+                    launcher: Some(Arc::new(support::launcher::FakeLauncher {
+                        forbid_start: Some("paused project must not create a run"),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            next.manual_dispatch();
+            let receipt = protocol::completion(&next).unwrap();
+            assert_eq!(
+                (receipt.stopped, receipt.resumed, receipt.pending),
+                (u32::from(stop.is_none()), 0, u32::from(resumes))
+            );
+            dispatch::step_now(&next, &t).await.unwrap();
+            assert!(matches!(
+                next.proj().tasks[&t].view.state,
+                TaskState::Stopped { .. }
+            ));
+            assert_eq!(next.proj().live_runs().count(), 0);
+            assert_eq!(next.proj().tasks[&t].update_stop.is_some(), resumes);
+            assert_eq!(
+                protocol::completion(&next).unwrap().pending,
+                u32::from(resumes)
+            );
+            // A restart during the pause preserves the marker without creating an attempt.
+            drop(next);
+            let next = Engine::open(cfg, Default::default()).unwrap();
+            next.manual_dispatch();
+            dvb_engine::reconcile::mark(&next).unwrap();
+            dvb_engine::reconcile::reconcile(next.clone())
+                .await
+                .unwrap();
+            support::wait::SLOW
+                .until("stopped recovery", || {
+                    matches!(next.proj().tasks[&t].view.state, TaskState::Stopped { .. })
+                })
+                .await;
+            dispatch::step_now(&next, &t).await.unwrap();
+            assert_eq!(next.proj().live_runs().count(), 0);
+            assert_eq!(next.proj().tasks[&t].update_stop.is_some(), resumes);
+            // Another update must leave the pending marker intact as well.
+            dispatch::stop_for_update(&next, "99.0.1").await;
+            assert_eq!(next.proj().tasks[&t].update_stop.is_some(), resumes);
+            next.append_checked(Some(&p), Actor::Owner, |_, _| {
+                Ok(vec![EventKind::ProjectResumed {}])
+            })
+            .unwrap();
+            dispatch::step_now(&next, &t).await.unwrap();
+            next.append_checked(Some(&p), Actor::Owner, |_, _| {
+                Ok(vec![EventKind::ProjectPaused {}])
+            })
+            .unwrap();
+            if resumes {
+                assert_eq!(next.proj().tasks[&t].view.state, TaskState::Preparing);
+                assert_ne!(next.proj().tasks[&t].facts.run.as_ref(), Some(&r));
+            } else {
+                assert!(matches!(
+                    next.proj().tasks[&t].view.state,
+                    TaskState::Stopped { .. }
+                ));
+            }
+            // Replaying and kicking again never creates a second resume.
+            dispatch::step_now(&next, &t).await.unwrap();
+            let resumed = support::events::all(&next)
+                .iter()
+                .filter(|ev| {
+                    ev.actor == Actor::Engine && matches!(ev.kind, EventKind::TaskResumed { .. })
+                })
+                .count();
+            assert_eq!(resumed, usize::from(resumes));
+            let replay = dvb_engine::proj::Projections::rebuild(&support::events::all(&next));
+            assert!(replay.tasks[&t].update_stop.is_none());
+            let receipt = protocol::completion(&next).unwrap();
+            assert_eq!(
+                (receipt.stopped, receipt.resumed, receipt.pending),
+                (u32::from(stop.is_none()), u32::from(resumes), 0)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_update_without_running_work_resumes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = Config::dev(dir.path(), "dvb".into());
+    let e = Engine::open(cfg.clone(), Default::default()).unwrap();
+    e.manual_dispatch();
+    dvb_engine::dispatch::stop_for_update(&e, "99.0.0").await;
+    let l = Layout::of(&cfg);
+    std::fs::create_dir_all(l.versions()).unwrap();
+    dvb_engine::update::handover::prepare(&l, &e.store, dvb_core::VERSION, "99.0.0").unwrap();
+    assert_eq!(
+        dvb_engine::update::handover::recover(&l, "99.0.0", true, &|db| {
+            dvb_store::Store::open(db).map_err(Into::into)
+        })
+        .unwrap(),
+        dvb_engine::update::handover::Next::Run
+    );
+    drop(e);
+    let e = Engine::open(cfg, Default::default()).unwrap();
+    let receipt = protocol::completion(&e).unwrap();
+    assert_eq!(
+        (receipt.stopped, receipt.resumed, receipt.pending),
+        (0, 0, 0)
+    );
+    assert!(
+        !support::events::all(&e)
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::TaskResumed { .. }))
     );
 }
 

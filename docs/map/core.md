@@ -22,7 +22,8 @@ interruptions. API handlers, workers and forge effects use these shared types.
 - `crates/dvb-engine/src/engine.rs`: configuration, construction-time readings
   (`EngineOptions`), model lookups, locks and checked appends.
 - `crates/dvb-engine/src/proj/`: projections (`mod.rs`) and one module per view
-  (projects, goals, tasks, runs, questions, roles and hires, settings).
+  (projects, goals, tasks, runs, questions, roles and hires, settings);
+  `update.rs` folds update completion receipts and resume counts.
 - `crates/dvb-engine/src/dispatch/mod.rs`: task scheduling and step routing.
   `effects.rs` publication, review and effect retries; `checks.rs` CI polling;
   `merge.rs` merges and branch updates; `runs.rs` assignments and launch admission;

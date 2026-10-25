@@ -2188,6 +2188,7 @@ async fn rate_limited_planning_fetch_and_gate_waits_keep_the_answer_and_attempts
         "fetch",
         ForgeError {
             retryable: true,
+            unreachable: false,
             detail: "GitHub HTTP 403 (rate limit)".into(),
             rate_limit: Some(RateLimit { reset: Some(reset) }),
         },
@@ -2252,6 +2253,7 @@ async fn untimed_planning_limits_double_backoff_without_spending_failure_attempt
         "fetch",
         ForgeError {
             retryable: true,
+            unreachable: false,
             detail: "unavailable".into(),
             rate_limit: None,
         },
@@ -2261,6 +2263,7 @@ async fn untimed_planning_limits_double_backoff_without_spending_failure_attempt
             "fetch",
             ForgeError {
                 retryable: true,
+                unreachable: false,
                 detail: "GitHub HTTP 429 (rate limit)".into(),
                 rate_limit: Some(RateLimit { reset: None }),
             },
@@ -2297,6 +2300,7 @@ async fn repeated_wake_fetch_failures_stop_at_the_cap_with_one_durable_hold() {
     *forge.fetch_error.lock().unwrap() = Some(dvb_core::forge::ForgeError {
         rate_limit: None,
         retryable: true,
+        unreachable: false,
         detail: "fetch transport unavailable".into(),
     });
     wake::wake(e.clone(), p.clone(), wake::Wake::Answer, 0, 0)
@@ -2370,6 +2374,7 @@ async fn non_retryable_wake_fetch_holds_immediately_and_drop_uses_existing_actio
     *forge.fetch_error.lock().unwrap() = Some(dvb_core::forge::ForgeError {
         rate_limit: None,
         retryable: false,
+        unreachable: false,
         detail: "fetch repository refused".into(),
     });
     wake::wake(e.clone(), p.clone(), wake::Wake::Goal, 0, 0)
@@ -2430,6 +2435,7 @@ async fn terminal_fetch_replaces_an_empty_hold_released_by_a_pending_reply() {
     *forge.fetch_error.lock().unwrap() = Some(dvb_core::forge::ForgeError {
         rate_limit: None,
         retryable: false,
+        unreachable: false,
         detail: "fetch access refused after reply".into(),
     });
     wake::wake(e.clone(), p.clone(), wake::Wake::Answer, 0, 0)
@@ -2800,6 +2806,7 @@ async fn redirect_and_drop_durably_close_only_their_task_questions() {
                 q,
                 other_recommendation,
                 EventKind::TaskStopped {
+                    update: false,
                     task: dvb_core::TaskId::new("stopped"),
                     reason: None,
                 },

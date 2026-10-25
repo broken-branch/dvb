@@ -80,8 +80,15 @@ async fn socket_an_update_stops_a_running_driver_before_the_exec_and_it_resumes(
     // What the old engine saw at the exec.
     let at_exec = Arc::new(Mutex::new(None));
     let probe: protocol::Exec = {
-        let (e, at_exec, alive, task) = (e.clone(), at_exec.clone(), alive.clone(), task.clone());
+        let (e, at_exec, alive, task, run_dir) = (
+            e.clone(),
+            at_exec.clone(),
+            alive.clone(),
+            task.clone(),
+            run_dir.clone(),
+        );
         Arc::new(move |_: &Path| {
+            assert!(run_dir.join("ws/docs/first.md").exists());
             let state = e.proj().tasks[&task].view.state.clone();
             *at_exec.lock().unwrap() = Some((protocol::runs_active(&e), alive(), state));
             std::io::Error::other("test: the target is not started")
@@ -98,10 +105,14 @@ async fn socket_an_update_stops_a_running_driver_before_the_exec_and_it_resumes(
         })
     };
     // Past the drain's bound while the driver still works.
-    while !handover.is_finished() {
-        clock.advance_millis(protocol::DRAIN_MILLIS);
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        while !handover.is_finished() {
+            clock.advance_millis(protocol::DRAIN_MILLIS);
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .unwrap();
     handover.await.unwrap();
     let (active, driver_alive, state) = at_exec.lock().unwrap().take().expect("the exec");
     assert_eq!(active, 0, "no run spans the update");
@@ -124,10 +135,8 @@ async fn socket_an_update_stops_a_running_driver_before_the_exec_and_it_resumes(
         &ev.kind,
         EventKind::TaskStopped { reason: Some(r), .. } if r.contains("update to dvb 99.0.0")
     )));
-    assert!(run_dir.join("ws/docs/first.md").exists());
 
     // The stopped work resumes from its workspace and merges.
-    let _: TaskView = c.post(&format!("/tasks/{task}/resume"), &()).await.unwrap();
     until("the task to be done", async || {
         let t: TaskView = c.get(&format!("/tasks/{task}")).await.ok()?;
         (t.state == TaskState::Done).then_some(())

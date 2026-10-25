@@ -9,7 +9,8 @@ use dvb_core::git::Git;
 use dvb_core::launcher::{UnitId, UnitState};
 use dvb_core::state::Effect;
 use dvb_core::{
-    Actor, Command, EventKind, Refusal, RefusalCode, RunAssignment, RunId, TaskId, TaskState, caps,
+    Actor, Command, EventId, EventKind, Refusal, RefusalCode, RunAssignment, RunId, TaskId,
+    TaskState, caps,
 };
 use std::time::Duration;
 
@@ -38,14 +39,25 @@ pub(crate) async fn stop_with(
     reason: Option<String>,
     allowed: impl FnOnce(&Projections) -> Result<(), Refusal>,
 ) -> Result<TaskState, Fail> {
-    e.remember();
-    e.decide(
-        e.proj(),
+    stop_decision(
+        e,
         task,
         actor,
         crate::Decision::new("stop", Command::Stop(reason)),
         allowed,
-    )?;
+    )
+    .await
+}
+
+async fn stop_decision(
+    e: &AppState,
+    task: &TaskId,
+    actor: Actor,
+    decision: crate::Decision<'_>,
+    allowed: impl FnOnce(&Projections) -> Result<(), Refusal>,
+) -> Result<TaskState, Fail> {
+    e.remember();
+    e.decide(e.proj(), task, actor, decision, allowed)?;
     let _lock = e.lock(task).await;
     let (t, _) = read(e, task)?;
     let Some(r) = live_run(e, &t) else {
@@ -74,10 +86,10 @@ pub(crate) async fn stop_with(
     }
 }
 
-/// at the drain's bound every run still going is stopped the
-/// owner's way (stopped and resumable, its workspace and branch kept), so
-/// no run spans the update. A run doing its task's work stops the task, with
-/// the update as its reason; any other run (an orchestrator's, a reviewer past
+/// At the drain's bound every run still going is stopped with its workspace
+/// and branch kept, so no run spans the update. A run doing its task's work
+/// marks the task for one resume after handover or rollback; any other run
+/// (an orchestrator's, a reviewer past
 /// its verdict) has only its unit stopped and ended. A stop that cannot be
 /// confirmed in time is left to the target: its restart reconciliation stops a
 /// unit that outlived its task's stop or its durable taskless stop request.
@@ -91,30 +103,31 @@ pub async fn stop_for_update(e: &AppState, to: &str) {
             .collect()
     };
     let stops = runs.into_iter().map(|r| {
-        let reason = format!("stopped for the update to dvb {to}; resume it to carry on");
+        let reason = format!("stopped for the update to dvb {to}; resumes after the restart");
         async move {
-            let works = r.assignment.task.clone().filter(|task| {
-                e.proj().tasks.get(task).is_some_and(|t| {
-                    let state = if let TaskState::Unknown { last } = &t.view.state {
-                        last.as_ref()
-                    } else {
-                        &t.view.state
-                    };
-                    t.facts.run.as_ref() == Some(&r.assignment.run)
-                        && !r.verdict_given
-                        && matches!(
-                            state,
-                            TaskState::Preparing
-                                | TaskState::Running
-                                | TaskState::Collecting
-                                | TaskState::InReview
-                        )
-                })
-            });
+            let works = task_to_stop_for_update(&e.proj(), &r);
             let stopped = match works {
-                Some(task) => stop_with(e, &task, Actor::Engine, Some(reason), |_| Ok(()))
-                    .await
-                    .map(|_| ()),
+                Some(task) => stop_decision(
+                    e,
+                    &task,
+                    Actor::Engine,
+                    crate::Decision {
+                        update_stop: true,
+                        ..crate::Decision::new("stop for update", Command::Stop(Some(reason)))
+                    },
+                    |proj| {
+                        if task_to_stop_for_update(proj, &r).as_ref() == Some(&task) {
+                            Ok(())
+                        } else {
+                            Err(Refusal::new(
+                                RefusalCode::ValueChanged,
+                                "the task changed before the update stop",
+                            ))
+                        }
+                    },
+                )
+                .await
+                .map(|_| ()),
                 None => stop_unit(e, &r, EndReason::Stopped).await,
             };
             if let Err(err) = stopped {
@@ -126,6 +139,26 @@ pub async fn stop_for_update(e: &AppState, to: &str) {
         }
     });
     futures_util::future::join_all(stops).await;
+}
+
+fn task_to_stop_for_update(proj: &Projections, run: &crate::proj::Run) -> Option<TaskId> {
+    let current = proj.runs.get(&run.assignment.run)?;
+    if current.ended.is_some() || current.verdict_given {
+        return None;
+    }
+    let task = run.assignment.task.as_ref()?;
+    let t = proj.tasks.get(task)?;
+    let state = if let TaskState::Unknown { last } = &t.view.state {
+        last.as_ref()
+    } else {
+        &t.view.state
+    };
+    (t.facts.run.as_ref() == Some(&run.assignment.run)
+        && matches!(
+            state,
+            TaskState::Preparing | TaskState::Running | TaskState::Collecting | TaskState::InReview
+        ))
+    .then(|| task.clone())
 }
 
 /// The task's current run, if it has not ended.
@@ -252,7 +285,28 @@ pub(super) async fn stop_again(e: &AppState, t: &Task) -> Result<Next, Fail> {
 pub async fn resume(e: &AppState, task: &TaskId, actor: Actor) -> Result<TaskState, Fail> {
     e.remember();
     let _lock = e.lock(task).await;
+    resume_locked(e, task, actor, None).await
+}
+
+/// The caller holds the task lock. Update resumes also check the stop under the writer lock.
+pub(super) async fn resume_locked(
+    e: &AppState,
+    task: &TaskId,
+    actor: Actor,
+    update_stop: Option<EventId>,
+) -> Result<TaskState, Fail> {
     let (t, p) = read(e, task)?;
+    let allowed = |proj: &Projections| {
+        if let Some(expected) = update_stop
+            && proj.tasks.get(task).and_then(|t| t.update_stop) != Some(expected)
+        {
+            return Err(Refusal::new(
+                RefusalCode::ValueChanged,
+                "the update stop changed before resume",
+            ));
+        }
+        Ok(())
+    };
     // Its workspace is not reused while the stopped unit may still run.
     if matches!(t.view.state, TaskState::Stopped { .. })
         && let Some(r) = live_run(e, &t)
@@ -278,7 +332,7 @@ pub async fn resume(e: &AppState, task: &TaskId, actor: Actor) -> Result<TaskSta
         }
         TaskState::Stopped { was } => match &**was {
             TaskState::Preparing | TaskState::Running | TaskState::Collecting => {
-                Some(builder("Resumed by the owner.").await?)
+                Some(builder(if update_stop.is_some() { "Resumed after the dvb update." } else { "Resumed by the owner." }).await?)
             }
             TaskState::InReview => Some((
                 reviewer_assignment(e, &p, &t, t.view.head.as_deref().unwrap_or_default())?,
@@ -319,17 +373,22 @@ pub async fn resume(e: &AppState, task: &TaskId, actor: Actor) -> Result<TaskSta
         | TaskState::Failed { .. } => None,
     };
     match run {
-        Some((a, from)) => {
-            let cmd = Command::Resume(Some(a.clone()));
-            start_run(e, task, actor, "resume", cmd, &a, from)
-        }
+        Some((a, from)) => start_run(
+            e,
+            task,
+            actor,
+            crate::Decision::new("resume", Command::Resume(Some(a.clone()))),
+            &a,
+            from,
+            allowed,
+        ),
         None => {
             let state = e.decide(
                 e.proj(),
                 task,
                 actor,
                 crate::Decision::new("resume", Command::Resume(None)),
-                |_| Ok(()),
+                allowed,
             )?;
             // Back to Planned, it starts as an approved plan's task does:
             // after its dependencies, in a free slot, with its saved hire choice.

@@ -353,6 +353,7 @@ async fn owner_retry_finishes_failed_body_edits_before_review() {
         *f.recorded.edit_pr_body_error.lock().unwrap() = Some(ForgeError {
             rate_limit: None,
             retryable,
+            unreachable: false,
             detail: "body edit failed".into(),
         });
         loop {
@@ -509,6 +510,7 @@ async fn rate_limited_403_push_waits_then_succeeds_without_spending_attempts() {
             "push",
             ForgeError {
                 retryable: true,
+                unreachable: false,
                 detail: "GitHub HTTP 403 (rate limit)".into(),
                 rate_limit: Some(RateLimit {
                     reset: Some(clock.now().plus_millis(60_000)),
@@ -633,6 +635,7 @@ async fn limits_without_resets_keep_backoff_and_ordinary_push_failures_still_exh
             "push",
             ForgeError {
                 retryable: true,
+                unreachable: false,
                 detail: "GitHub HTTP 429 (rate limit)".into(),
                 rate_limit: Some(RateLimit { reset: None }),
             },
@@ -667,6 +670,7 @@ async fn limits_without_resets_keep_backoff_and_ordinary_push_failures_still_exh
             "push",
             ForgeError {
                 retryable: true,
+                unreachable: false,
                 detail: "unavailable".into(),
                 rate_limit: None,
             },
@@ -692,6 +696,7 @@ async fn limits_without_resets_keep_backoff_and_ordinary_push_failures_still_exh
         "push",
         ForgeError {
             retryable: true,
+            unreachable: false,
             detail: "unavailable".into(),
             rate_limit: None,
         },

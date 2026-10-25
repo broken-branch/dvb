@@ -126,41 +126,51 @@ async fn update(
 /// Asks the engine to update, shows its progress, and returns the version it is
 /// now running. The desk is the caller's to restart.
 async fn engine_update(client: &Client, to: Option<String>) -> Result<String, CliError> {
+    engine_update_with(client, to, |line| write_stdout(format_args!("{line}"))).await
+}
+
+async fn engine_update_with(
+    client: &Client,
+    to: Option<String>,
+    mut write: impl FnMut(&str) -> Result<(), CliError>,
+) -> Result<String, CliError> {
     let started: UpdateInfo = client.post("/update", &StartUpdate { to }).await?;
     let Some(up) = started.updating else {
         return Err(CliError::Message(
             "the engine did not start an update".into(),
         ));
     };
-    write_stdout(format_args!(
-        "Updating dvb {} to {}\n",
-        started.current, up.to
-    ))?;
-    // The engine waits for running work, then restarts into the new version.
+    write(&format!("Updating dvb {} to {}\n", started.current, up.to))?;
+    write(&drain_text(up.runs_active))?;
     let wait = async {
-        let mut last = None;
+        let mut last = up.runs_active;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             match client.get::<UpdateInfo>("/update").await {
-                Ok(i) if i.current == up.to => {
-                    write_stdout(format_args!("dvb is now {}\n", i.current))?;
-                    return Ok(i.current);
+                Ok(i) => {
+                    let completed = i.completed.as_ref().filter(|c| c.to == up.to);
+                    if i.current == up.to {
+                        write(&format!("dvb is now {}\n", i.current))?;
+                        write(&completion_text(completed))?;
+                        return Ok(i.current);
+                    }
+                    match i.updating {
+                        Some(u) if last != u.runs_active => {
+                            last = u.runs_active;
+                            write(&drain_text(u.runs_active))?;
+                        }
+                        Some(_) => {}
+                        None => {
+                            if completed.is_some() {
+                                write(&completion_text(completed))?;
+                            }
+                            return Err(CliError::Message(
+                                "the update did not take and was undone; `dvb watch` shows why"
+                                    .into(),
+                            ));
+                        }
+                    }
                 }
-                Ok(i) => match i.updating {
-                    Some(u) if last != Some(u.runs_active) => {
-                        last = Some(u.runs_active);
-                        write_stdout(format_args!(
-                            "Waiting for {} runs to finish (stop them to go on)\n",
-                            u.runs_active
-                        ))?;
-                    }
-                    Some(_) => {}
-                    None => {
-                        return Err(CliError::Message(
-                            "the update did not take and was undone; `dvb watch` shows why".into(),
-                        ));
-                    }
-                },
                 Err(error) if error.restart_connection() => {}
                 Err(error) => return Err(error),
             }
@@ -169,6 +179,36 @@ async fn engine_update(client: &Client, to: Option<String>) -> Result<String, Cl
     tokio::time::timeout(std::time::Duration::from_secs(3600), wait)
         .await
         .map_err(|_| CliError::Message("the engine did not come back in an hour".into()))?
+}
+
+fn drain_text(runs: u32) -> String {
+    if runs == 0 {
+        "Restarting dvb\n".into()
+    } else {
+        format!(
+            "Waiting up to 30 s for {runs} runs to finish; remaining task runs will be stopped and resumed after the restart\n"
+        )
+    }
+}
+
+fn completion_text(completed: Option<&dvb_core::api::UpdateCompletion>) -> String {
+    match completed {
+        Some(c) if c.stopped == 0 => "Every task run finished before the restart\n".into(),
+        Some(c) if c.stopped == c.resumed => format!(
+            "{} task runs were stopped and resumed after the restart\n",
+            c.resumed
+        ),
+        Some(c) => format!(
+            "{} task runs were stopped; {} resumed after the restart; {} pending automatic resume; {} changed while stopped\n",
+            c.stopped,
+            c.resumed,
+            c.pending,
+            c.stopped
+                .saturating_sub(c.resumed)
+                .saturating_sub(c.pending)
+        ),
+        None => "The engine did not report which runs finished or resumed\n".into(),
+    }
 }
 
 /// The desk runs the old binary until it restarts; best effort, and a box with no
@@ -187,6 +227,91 @@ mod tests {
     use axum::http::Method;
     use dvb_core::RefusalCode;
     use serde_json::json;
+
+    #[tokio::test(start_paused = true)]
+    async fn update_output_reports_the_bound_and_the_actual_run_outcome() {
+        for (rollback, stopped, resumed, pending) in [
+            (false, 0, 0, 0),
+            (false, 2, 2, 0),
+            (false, 2, 0, 2),
+            (false, 3, 1, 1),
+            (true, 0, 0, 0),
+            (true, 2, 2, 0),
+            (true, 2, 0, 2),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let sock = dir.path().join("engine.sock");
+            let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+            let mut requests = requests(listener);
+            let server = tokio::spawn(async move {
+                reply(
+                    &mut requests,
+                    Method::GET,
+                    "/version",
+                    200,
+                    json!({"version":dvb_core::VERSION}),
+                )
+                .await;
+                let progress = json!({"current":dvb_core::VERSION, "available":null,
+                    "updating":{"to":"99.0.0", "runs_active":2}});
+                reply(
+                    &mut requests,
+                    Method::POST,
+                    "/update",
+                    202,
+                    progress.clone(),
+                )
+                .await;
+                reply(&mut requests, Method::GET, "/update", 200, progress).await;
+                // A pending resume must not delay reporting a completed restart or rollback.
+                reply(
+                    &mut requests,
+                    Method::GET,
+                    "/update",
+                    200,
+                    json!({"current":if rollback { dvb_core::VERSION } else { "99.0.0" },
+                        "available":null, "updating":null,
+                        "completed":{"to":"99.0.0", "stopped":stopped,
+                            "resumed":resumed, "pending":pending}}),
+                )
+                .await;
+            });
+            let mut output = String::new();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                engine_update_with(&Client::new(sock), None, |line| {
+                    output.push_str(line);
+                    Ok(())
+                }),
+            )
+            .await
+            .expect("a reachable engine must return its receipt immediately");
+            if rollback {
+                assert!(matches!(result, Err(CliError::Message(ref m)) if m.contains("undone")));
+            } else {
+                assert_eq!(result.unwrap(), "99.0.0");
+            }
+            assert!(output.contains("Waiting up to 30 s for 2 runs to finish; remaining task runs will be stopped and resumed after the restart"), "{output}");
+            assert!(!output.contains("stop them to go on"), "{output}");
+            if stopped == 0 {
+                assert!(
+                    output.contains("Every task run finished before the restart"),
+                    "{output}"
+                );
+            } else if resumed == stopped {
+                assert!(
+                    output.contains("2 task runs were stopped and resumed after the restart"),
+                    "{output}"
+                );
+            } else {
+                assert!(output.contains(&format!("{stopped} task runs were stopped; {resumed} resumed after the restart; {pending} pending automatic resume")), "{output}");
+                if stopped > resumed + pending {
+                    assert!(output.contains("1 changed while stopped"), "{output}");
+                }
+            }
+            server.await.unwrap();
+        }
+    }
 
     fn target(dir: &std::path::Path, cockpit: bool) -> Target {
         std::fs::create_dir(dir.join("opt")).unwrap();
