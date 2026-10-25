@@ -1,0 +1,6 @@
+[
+  {"kind":"goal.stated", "payload":{"goal":"legacy-goal","text":"Earlier release goal\n café <p>context</p> {{project_name}}\n","from_issue":null}},
+  {"kind":"plan.proposed", "payload":{"goal":"legacy-goal","tasks":[{"task":"legacy-task","title":"Legacy task","role":"backend","review":"code","summary":"Legacy summary"}]}},
+  {"kind":"goal.approved", "payload":{"goal":"legacy-goal"}},
+  {"kind":"run.started", "payload":{"run":"legacy-run","task":"legacy-task","role":"backend","hire":"h","model":"fake-1","vendor":"fake","effort":"medium","reason":"legacy builder","reviews":null,"base":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}
+]

@@ -1,0 +1,193 @@
+# Releases: pushing a tag vX.Y.Z builds the binary with the app embedded,
+# assembles the release with scripts/release.sh, signs SHA256SUMS with minisign and
+# publishes a GitHub release. A pull request that touches the release files runs the
+# same build as a dry run with a throwaway key, to prove the signing and install
+# path; nothing is published from a pull request.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/release.sh
+      - install/**
+      - ui/public/icons/**
+      - crates/dvb-engine/src/update/**
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: The tag matches the workspace version and is on main
+        id: tag
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "tag $GITHUB_REF_NAME, but Cargo.toml says $version"; exit 1; }
+            git fetch --quiet origin main
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$GITHUB_REF_NAME is not on main"; exit 1; }
+          fi
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build the app (embedded in the binary)
+        working-directory: ui
+        run: npm ci && npx vite build
+      - name: Install minisign
+        if: github.event_name == 'pull_request'
+        run: sudo apt-get -o DPkg::Lock::Timeout=300 update -q && sudo apt-get -o DPkg::Lock::Timeout=300 install -yq minisign polkitd
+      - name: Dry run only, a throwaway key (never committed, never published)
+        if: github.event_name == 'pull_request'
+        run: |
+          minisign -G -W -f -p "$RUNNER_TEMP/throwaway.pub" -s "$RUNNER_TEMP/throwaway.key" >/dev/null
+          cp "$RUNNER_TEMP/throwaway.pub" crates/dvb-engine/src/update/release.pub
+          echo "MINISIGN_KEY_FILE=$RUNNER_TEMP/throwaway.key" >> "$GITHUB_ENV"
+      - name: Build dvb
+        run: cargo build --release --locked -p dvb
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: release-binary
+          path: target/release/dvb
+          retention-days: 7
+      - name: Assemble, checksum and sign
+        if: github.event_name == 'pull_request'
+        run: scripts/release.sh "${{ steps.tag.outputs.tag }}" target/release/dvb "$RUNNER_TEMP/rel/${{ steps.tag.outputs.tag }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'pull_request'
+        with:
+          name: release
+          path: ${{ runner.temp }}/rel/${{ steps.tag.outputs.tag }}
+          retention-days: 7
+      - name: Dry run, packaging without a signing key is refused
+        if: github.event_name == 'pull_request'
+        run: |
+          if out=$(env -u MINISIGN_KEY_FILE scripts/release.sh "${{ steps.tag.outputs.tag }}" target/release/dvb "$RUNNER_TEMP/no-key" 2>&1); then
+            echo "packaged without a signing key"; exit 1
+          fi
+          grep -q "MINISIGN_KEY_FILE is required" <<<"$out" || { echo "refused for the wrong reason: $out"; exit 1; }
+          test ! -e "$RUNNER_TEMP/no-key"
+      - name: Dry run, a tampered checksum list is refused
+        if: github.event_name == 'pull_request'
+        run: |
+          tag=${{ steps.tag.outputs.tag }}
+          mkdir -p "$RUNNER_TEMP/bad"; cp -r "$RUNNER_TEMP/rel/$tag" "$RUNNER_TEMP/bad/$tag"
+          echo "0000000000000000000000000000000000000000000000000000000000000000  evil" >> "$RUNNER_TEMP/bad/$tag/SHA256SUMS"
+          if sudo env DVB_RELEASE_BASE="file://$RUNNER_TEMP/bad" sh "$RUNNER_TEMP/rel/$tag/install.sh" --engine --owner "$USER"; then
+            echo "a tampered release was installed"; exit 1
+          fi
+          [ ! -e /opt/dvb ] || { echo "the refused install left files behind"; exit 1; }
+      - name: Dry run, a release signed with another key is refused
+        if: github.event_name == 'pull_request'
+        run: |
+          tag=${{ steps.tag.outputs.tag }}
+          minisign -G -W -f -p "$RUNNER_TEMP/other.pub" -s "$RUNNER_TEMP/other.key" >/dev/null
+          mkdir -p "$RUNNER_TEMP/other"; cp -r "$RUNNER_TEMP/rel/$tag" "$RUNNER_TEMP/other/$tag"
+          minisign -S -s "$RUNNER_TEMP/other.key" -m "$RUNNER_TEMP/other/$tag/SHA256SUMS" -x "$RUNNER_TEMP/other/$tag/SHA256SUMS.minisig" >/dev/null
+          if sudo env DVB_RELEASE_BASE="file://$RUNNER_TEMP/other" sh "$RUNNER_TEMP/rel/$tag/install.sh" --engine --owner "$USER"; then
+            echo "a release signed with another key was installed"; exit 1
+          fi
+          [ ! -e /opt/dvb ] || { echo "the refused install left files behind"; exit 1; }
+      - name: Dry run, a keyed release with no signature, or no verifier, is refused
+        if: github.event_name == 'pull_request'
+        run: |
+          tag=${{ steps.tag.outputs.tag }}
+          mkdir -p "$RUNNER_TEMP/nosig"; cp -r "$RUNNER_TEMP/rel/$tag" "$RUNNER_TEMP/nosig/$tag"
+          rm "$RUNNER_TEMP/nosig/$tag/SHA256SUMS.minisig"
+          if out=$(sudo env DVB_RELEASE_BASE="file://$RUNNER_TEMP/nosig" sh "$RUNNER_TEMP/rel/$tag/install.sh" --engine --owner "$USER" 2>&1); then
+            echo "a keyed release with no signature was installed"; exit 1
+          fi
+          grep -q "no signature" <<<"$out" || { echo "refused for the wrong reason: $out"; exit 1; }
+          if out=$(sudo env DVB_MINISIGN=/nonexistent/minisign DVB_RELEASE_BASE="file://$RUNNER_TEMP/rel" sh "$RUNNER_TEMP/rel/$tag/install.sh" --engine --owner "$USER" 2>&1); then
+            echo "a keyed release was installed without a verifier"; exit 1
+          fi
+          grep -q "minisign is needed" <<<"$out" || { echo "refused for the wrong reason: $out"; exit 1; }
+          [ ! -e /opt/dvb ] || { echo "a refused install left files behind"; exit 1; }
+      - name: Dry run, install from a private fork's releases with a token
+        if: github.event_name == 'pull_request'
+        run: |
+          tag=${{ steps.tag.outputs.tag }}
+          printf '%s\n' dry-run-token > "$RUNNER_TEMP/token"; printf '%s\n' wrong-token > "$RUNNER_TEMP/wrong"
+          python3 scripts/fake-github.py "$RUNNER_TEMP/rel" "$RUNNER_TEMP/token" > "$RUNNER_TEMP/port" &
+          until [ -s "$RUNNER_TEMP/port" ]; do sleep 0.2; done
+          port=$(cat "$RUNNER_TEMP/port")
+          export DVB_API_BASE="http://127.0.0.1:$port"
+          # No token: the private fork fixture answers 404.
+          if sudo env DVB_RELEASE_BASE="http://127.0.0.1:$port/download" sh "$RUNNER_TEMP/rel/$tag/install.sh" --engine --owner "$USER"; then
+            echo "installed with no token"; exit 1
+          fi
+          if sudo env DVB_API_BASE="$DVB_API_BASE" sh "$RUNNER_TEMP/rel/$tag/install.sh" --engine --owner "$USER" --token-file "$RUNNER_TEMP/wrong"; then
+            echo "installed with a wrong token"; exit 1
+          fi
+          [ ! -e /opt/dvb ] || { echo "a refused install left files behind"; exit 1; }
+          sudo env DVB_API_BASE="$DVB_API_BASE" sh "$RUNNER_TEMP/rel/$tag/install.sh" --engine --cockpit --owner "$USER" --token-file "$RUNNER_TEMP/token"
+          [ "$(/opt/dvb/current/dvb --version)" = "dvb ${tag#v}" ]
+          systemctl is-active dvb.service
+          dvb --version
+          sudo journalctl -u dvb.service --no-pager | tail -5
+  sign:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-binary
+          path: ${{ runner.temp }}/bin
+      - name: Install minisign
+        run: sudo apt-get -o DPkg::Lock::Timeout=300 update -q && sudo apt-get -o DPkg::Lock::Timeout=300 install -yq minisign
+      - name: Sign with the release key (repository or environment secret)
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          [ -n "$MINISIGN_SECRET_KEY" ] || { echo "::error::MINISIGN_SECRET_KEY is required to release"; exit 1; }
+          trap 'rm -f "$RUNNER_TEMP/release.key"' EXIT
+          ( umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/release.key" )
+          chmod 0755 "$RUNNER_TEMP/bin/dvb"
+          MINISIGN_KEY_FILE="$RUNNER_TEMP/release.key" scripts/release.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/bin/dvb" "$RUNNER_TEMP/rel/$GITHUB_REF_NAME"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/rel/${{ github.ref_name }}
+          retention-days: 7
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: rel
+      - name: Publish the release (hyphenated tags are prereleases)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=""
+          case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac
+          notes="dvb $GITHUB_REF_NAME. Verify SHA256SUMS.minisig, then check SHA256SUMS."
+          gh release create "$GITHUB_REF_NAME" rel/* --repo broken-branch/dvb \
+            --title "$GITHUB_REF_NAME" --notes "$notes" --verify-tag $flags

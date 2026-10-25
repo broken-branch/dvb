@@ -1,0 +1,263 @@
+name: ci
+# A push to main runs no checks: the main ruleset requires up-to-date branches and
+# dvb squash-merges, so the merged tree is the PR head that just passed them.
+# cache.yml refreshes the caches PRs restore from main. Run the suite on a branch
+# by hand with workflow_dispatch.
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Free disk space on GitHub-hosted runners
+        if: runner.environment == 'github-hosted'
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/checkout@v7
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.148,cargo-deny@0.20.2
+      - run: scripts/check.sh rust
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: scripts/check.sh ui
+      - name: Check Omarchy plugin
+        if: hashFiles('omarchy-plugin/check') != ''
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get -o DPkg::Lock::Timeout=300 update -q
+            sudo apt-get -o DPkg::Lock::Timeout=300 install -yq jq
+          fi
+          omarchy-plugin/check
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - run: scripts/check.sh contracts
+      # The tree as the public copy will see it. The denylist names private things,
+      # so it lives only in the LEAK_DENYLIST secret (empty on the public repository).
+      - name: The public copy passes the leak check
+        if: github.event_name == 'pull_request'
+        env:
+          LEAK_DENYLIST: ${{ secrets.LEAK_DENYLIST }}
+        run: |
+          python3 scripts/test-leak-check.py
+          export_dir=$(mktemp -d -p "$RUNNER_TEMP"); public=$(mktemp -d -p "$RUNNER_TEMP")
+          denylist=$(mktemp -p "$RUNNER_TEMP")
+          trap 'rm -rf "$export_dir" "$public" "$denylist"' EXIT
+          git archive HEAD | tar -x -C "$export_dir"
+          scripts/public-copy.sh "$export_dir" "$public"
+          # The tests of private files run here too; the public copy leaves none out.
+          for test in "$export_dir"/scripts/test-*.py; do
+            name=${test#"$export_dir"/}
+            if [ ! -e "$public/$name" ]; then python3 "$name"; fi
+          done
+          if [ -n "$LEAK_DENYLIST" ]; then
+            printf '%s\n' "$LEAK_DENYLIST" > "$denylist"
+            scripts/leak-check.sh "$public" --denylist "$denylist"
+          else
+            echo "::notice::LEAK_DENYLIST is empty: the denylist part of the leak check is skipped"
+            scripts/leak-check.sh "$public"
+          fi
+  identity:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # dvb's own commits come from its GitHub App ([bot]); manual commits must
+      # use a GitHub noreply address (login@ or id+login@) as author and committer.
+      - name: Every commit uses the neutral identity
+        run: |
+          noreply='[^<|]* <([0-9]+\+)?[A-Za-z0-9-]+@users\.noreply\.github\.com>'
+          bad=$(git log --format='%H %an <%ae> | %cn <%ce>' "origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}" \
+            | grep -vE "^[0-9a-f]+ $noreply \| $noreply\$" \
+            | grep -vE '\[bot\]' || true)
+          if [ -n "$bad" ]; then echo "Commits with another identity:"; echo "$bad"; exit 1; fi
+      - name: No secrets in the PR's commits (gitleaks)
+        run: |
+          # The gitleaks that scripts/leak-check.sh pins.
+          version=$(sed -n 's/^GITLEAKS_VERSION=//p' scripts/leak-check.sh)
+          sha256=$(sed -n 's/^GITLEAKS_SHA256=//p' scripts/leak-check.sh)
+          archive="gitleaks_${version}_linux_x64.tar.gz"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/$archive" -o "$archive"
+          echo "$sha256  $archive" | sha256sum -c -
+          tar -xzf "$archive" gitleaks
+          ./gitleaks git --redact --no-banner --log-opts="origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}" .
+  # Acceptance on a real install: install.sh with
+  # sudo, the systemd units and polkit rule, one fake task end to end, the six
+  # acceptance checks and the app window in Chrome.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build the app (embedded in the desk)
+        working-directory: ui
+        run: npm ci && npx vite build
+      - name: Every UI screen loads without errors or horizontal overflow
+        working-directory: ui
+        run: npm run test:browser
+      - name: Build dvb
+        run: cargo build --locked -p dvb
+      - name: Install the engine and cockpit, with the Fake provider and forge and no network
+        run: |
+          [ -x /usr/lib/polkit-1/polkitd ] || { sudo apt-get -o DPkg::Lock::Timeout=300 update -q && sudo apt-get -o DPkg::Lock::Timeout=300 install -yq polkitd; }
+          for d in dvb.service.d dvb-run-fake@.service.d; do sudo install -d "/etc/systemd/system/$d"; done
+          printf '[Service]\nEnvironment=DVB_FAKE=1\nIPAddressDeny=any\n' | sudo tee /etc/systemd/system/dvb.service.d/e2e.conf
+          printf '[Service]\nIPAddressDeny=any\n' | sudo tee /etc/systemd/system/dvb-run-fake@.service.d/e2e.conf
+          sudo install/install.sh --engine --cockpit --binary target/debug/dvb --owner "$USER"
+      - name: playwright-core (uses the runner's Chrome)
+        run: npm install --prefix scripts/e2e --no-save "playwright-core@$(node -p 'require("./ui/package.json").devDependencies["playwright-core"]')"
+      - name: The six acceptance checks
+        run: scripts/run-e2e.sh
+      - name: Engine and run logs
+        if: failure()
+        run: sudo journalctl -u dvb.service -u 'dvb-run-*' --no-pager -o short-precise | tail -300
+  # Install the actual previous release (the newest published
+  # one; until one exists, a build of this commit stands in), finish a task on it,
+  # then move it to the candidate the way a release that cannot update itself is
+  # moved: by running the candidate release's install.sh over it. From the candidate,
+  # self-update is tried three ways. Signing uses a throwaway key made in this job
+  # and pinned into the candidates (never committed); the candidates have one more
+  # migration, and one candidate's migration is broken.
+  upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain (from rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build the app (embedded in the binary)
+        working-directory: ui
+        run: npm ci && npx vite build
+      - name: Tools and a throwaway signing key
+        run: |
+          sudo apt-get -o DPkg::Lock::Timeout=300 update -q && sudo apt-get -o DPkg::Lock::Timeout=300 install -yq minisign sqlite3
+          [ -x /usr/lib/polkit-1/polkitd ] || sudo apt-get -o DPkg::Lock::Timeout=300 install -yq polkitd
+          minisign -G -W -f -p "$RUNNER_TEMP/k.pub" -s "$RUNNER_TEMP/k.key" >/dev/null
+          minisign -G -W -f -p "$RUNNER_TEMP/o.pub" -s "$RUNNER_TEMP/o.key" >/dev/null
+          cp "$RUNNER_TEMP/k.pub" crates/dvb-engine/src/update/release.pub
+          echo "MINISIGN_KEY_FILE=$RUNNER_TEMP/k.key" >> "$GITHUB_ENV"
+      - name: Install the previous release, with the Fake provider and forge and no network
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for d in dvb.service.d dvb-run-fake@.service.d; do sudo install -d "/etc/systemd/system/$d"; done
+          printf '[Service]\nEnvironment=DVB_FAKE=1\nEnvironment=DVB_RELEASE_BASE=file:///srv/dvb-upgrade\nIPAddressDeny=any\n' | sudo tee /etc/systemd/system/dvb.service.d/e2e.conf
+          printf '[Service]\nIPAddressDeny=any\n' | sudo tee /etc/systemd/system/dvb-run-fake@.service.d/e2e.conf
+          tag=$(gh release list --json tagName,isDraft --jq '[.[] | select(.isDraft | not)][0].tagName' || true)
+          if [ -n "$tag" ]; then
+            mkdir -p "$RUNNER_TEMP/published/$tag"
+            gh release download "$tag" --dir "$RUNNER_TEMP/published/$tag"
+            sudo env DVB_RELEASE_BASE="file://$RUNNER_TEMP/published" sh "$RUNNER_TEMP/published/$tag/install.sh" --engine --owner "$USER"
+            echo "PREVIOUS=release $tag" >> "$GITHUB_ENV"
+          else
+            echo "::notice::No published release yet: a build of this commit stands in for the previous release"
+            cargo build -p dvb
+            sudo install/install.sh --engine --binary target/debug/dvb --owner "$USER"
+            echo "PREVIOUS=head" >> "$GITHUB_ENV"
+          fi
+          systemctl is-active dvb.service
+      - name: Seed the previous release's install with a finished task
+        run: scripts/run-upgrade.sh seed
+      - name: Build the candidates
+        run: |
+          cur=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          bump() { # <version>: the workspace and its path dependencies
+            sed -i "0,/^version = \"$cur\"/s//version = \"$1\"/" Cargo.toml
+            sed -i "/path = \"\.\.\//s/version = \"[^\"]*\"/version = \"$1\"/" crates/*/Cargo.toml
+            cur=$1
+          }
+          rel="$RUNNER_TEMP/rel"; mkdir -p "$rel"
+          # The candidate: one more migration.
+          bump 0.99.0
+          echo 'CREATE TABLE probe (x INTEGER);' > crates/dvb-store/migrations/V2__probe.sql
+          cargo build -p dvb
+          scripts/release.sh v0.99.0 target/debug/dvb "$rel/v0.99.0"
+          # Its successor with a migration that is not SQL.
+          bump 0.99.1
+          echo 'THIS IS NOT SQL;' > crates/dvb-store/migrations/V3__next.sql
+          cargo build -p dvb
+          scripts/release.sh v0.99.1 target/debug/dvb "$rel/v0.99.1"
+          # A good successor.
+          bump 0.99.3
+          echo 'CREATE TABLE probe2 (x INTEGER);' > crates/dvb-store/migrations/V3__next.sql
+          cargo build -p dvb
+          scripts/release.sh v0.99.3 target/debug/dvb "$rel/v0.99.3"
+          # A release signed with another key: the good one, renamed and re-signed.
+          cp -r "$rel/v0.99.3" "$rel/v0.99.2"
+          cd "$rel/v0.99.2"
+          mv dvb-0.99.3-x86_64-linux.tar.gz dvb-0.99.2-x86_64-linux.tar.gz
+          sha256sum dvb-0.99.2-x86_64-linux.tar.gz > SHA256SUMS
+          rm -f SHA256SUMS.minisig
+          minisign -S -s "$RUNNER_TEMP/o.key" -m SHA256SUMS -x SHA256SUMS.minisig >/dev/null
+      - name: Publish the candidates where the engine reads releases
+        run: |
+          sudo install -d -m 0755 /srv/dvb-upgrade
+          sudo cp -r "$RUNNER_TEMP/rel/." /srv/dvb-upgrade/
+          sudo chmod -R a+rX /srv/dvb-upgrade
+      - name: A previous release that cannot update itself is moved by the candidate's install.sh
+        run: |
+          # A published previous release has no update protocol (or no key to check with).
+          if [[ "$PREVIOUS" == release* ]] && /opt/dvb/current/dvb update --to 0.99.0; then
+            echo "the previous release updated itself; the bootstrap path is not needed"; exit 1
+          fi
+          sudo env DVB_RELEASE_BASE=file:///srv/dvb-upgrade sh /srv/dvb-upgrade/v0.99.0/install.sh --engine --owner "$USER"
+          scripts/run-upgrade.sh bootstrapped 0.99.0
+      - name: Refuse, undo and update (self-update from the candidate)
+        run: scripts/run-upgrade.sh cases 0.99.1 0.99.2 0.99.3
+      - name: Engine logs
+        if: failure()
+        run: sudo journalctl -u dvb.service -u 'dvb-run-*' --no-pager -o short-precise | tail -300

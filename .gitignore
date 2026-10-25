@@ -1,0 +1,5 @@
+/target
+/node_modules/
+
+# The e2e browser step installs playwright-core here.
+/scripts/e2e/node_modules/

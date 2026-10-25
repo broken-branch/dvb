@@ -1,0 +1,7 @@
+{"id":1,"result":{"userAgent":"codex-cli/0.159.2","codexHome":"/work/home/.codex"}}
+{"id":2,"result":{"rateLimits":{"limitId":"codex","limitName":null,"planType":"pro","primary":{"usedPercent":67,"windowDurationMins":10080,"resetsAt":1791046706},"secondary":null},"rateLimitsByLimitId":null}}
+{"id":3,"result":{"thread":{"id":"th_1","preview":"","ephemeral":false},"model":"gpt-6.1-sol","modelProvider":"openai","cwd":"/ws","approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"},"reasoningEffort":null}}
+{"method":"thread/started","params":{"thread":{"id":"th_1"}}}
+{"id":4,"result":{"turn":{"id":"tu_1","status":"inProgress","items":[]}}}
+{"method":"turn/started","params":{"threadId":"th_1","turn":{"id":"tu_1","status":"inProgress","items":[]}}}
+{"method":"error","params":{"threadId":"th_1","turnId":"tu_1","willRetry":false,"error":{"message":"You've hit your usage limit.","codexErrorInfo":"usageLimitExceeded"}}}

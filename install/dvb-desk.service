@@ -1,0 +1,10 @@
+# The desk: the app on 127.0.0.1, as the desktop user. A user unit.
+[Unit]
+Description=dvb desk
+
+[Service]
+ExecStart=/opt/dvb/current/dvb desk --port 7300
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,28 @@
+# What the publish scan blocks. It runs on every publication
+# diff and message, PR title and body, and every other text dvb sends to GitHub.
+# A hit blocks with the file, line and rule. The owner's name and email are added
+# from settings at run time and never written here.
+
+[[rule]]
+id = "private-key"
+regex = '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+
+[[rule]]
+id = "github-token"
+regex = '\b(ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}'
+
+[[rule]]
+id = "anthropic-key"
+regex = '\bsk-ant-[A-Za-z0-9_-]{20,}'
+
+[[rule]]
+id = "openai-key"
+regex = '\bsk-(proj-)?[A-Za-z0-9_-]{20,}'
+
+[[rule]]
+id = "aws-access-key"
+regex = '\bAKIA[0-9A-Z]{16}\b'
+
+[[rule]]
+id = "run-work-dir"
+regex = '/var/lib/dvb/work/[0-9A-HJKMNP-TV-Z]{26}\b'

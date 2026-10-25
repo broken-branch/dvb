@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.66"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/broken-branch/dvb"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+# Every state and action pair is handled; no wildcard arms.
+[workspace.lints.clippy]
+wildcard_enum_match_arm = "deny"
+match_wildcard_for_single_variants = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+redundant_clone = "deny"
+needless_pass_by_value = "deny"
+unused_async = "deny"
+significant_drop_tightening = "deny"
+assigning_clones = "deny"
+redundant_closure_for_method_calls = "deny"
+disallowed_methods = "deny"
+# The strict command keeps this advisory via --force-warn clippy::too_many_lines.
+too_many_lines = "warn"

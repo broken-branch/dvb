@@ -1,0 +1,3 @@
+[
+  {"run": ["verdict", {"findings": [], "summary": "No findings. The project has no CI; the Fake reviewer's local gates (none) ran."}]}
+]

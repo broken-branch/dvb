@@ -1,0 +1,27 @@
+# The dvb engine: one system service as user dvb, started by its two
+# sockets. No login session, so polkit applies the rule for user dvb.
+[Unit]
+Description=dvb engine
+Documentation=https://github.com/broken-branch/dvb
+Requires=dvb.socket dvb-run.socket
+After=dvb.socket dvb-run.socket
+# The engine contacts GitHub as soon as it starts.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=dvb
+Group=dvb
+UMask=0027
+ExecStart=/opt/dvb/current/dvb engine
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+# The engine's temporary files are its own; nothing it shares with a run, the
+# owner or the desk goes through /tmp.
+PrivateTmp=yes
+
+[Install]
+Also=dvb.socket dvb-run.socket
+WantedBy=multi-user.target

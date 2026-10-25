@@ -1,0 +1,5 @@
+[Unit]
+Description=dvb run %i (Codex)
+
+[Service]
+BindPaths=/var/lib/dvb/logins/codex:/var/lib/dvb/work/%i/home/.codex

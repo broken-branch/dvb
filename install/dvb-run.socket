@@ -1,0 +1,18 @@
+# The run socket: dvb:dvb-worker 0660. The engine tells runs
+# apart by the unit each caller's process is in. A socket unit of its own because
+# its owner and mode differ from the owner API's.
+[Unit]
+Description=dvb run socket
+
+[Socket]
+ListenStream=/run/dvb/run.sock
+FileDescriptorName=run
+Service=dvb.service
+SocketUser=dvb
+SocketGroup=dvb-worker
+SocketMode=0660
+DirectoryMode=0755
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

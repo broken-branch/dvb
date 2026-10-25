@@ -1,0 +1,16 @@
+// dvb: the engine's user may start, stop and kill run units, and set the run slice's properties.
+polkit.addRule(function (action, subject) {
+  if (action.id !== "org.freedesktop.systemd1.manage-units" || subject.user !== "dvb") {
+    return polkit.Result.NOT_HANDLED;
+  }
+  var unit = action.lookup("unit");
+  var verb = action.lookup("verb");
+  if (unit === "dvb.slice" && verb === "set-property") {
+    return polkit.Result.YES;
+  }
+  if (unit && /^dvb-run-[a-z]+@[0-9A-Za-z]+\.service$/.test(unit) &&
+      (verb === "start" || verb === "stop" || verb === "kill")) {
+    return polkit.Result.YES;
+  }
+  return polkit.Result.NOT_HANDLED;
+});

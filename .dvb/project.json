@@ -1,0 +1,13 @@
+{
+  "ci": {
+    "expected": [
+      "contracts",
+      "e2e",
+      "identity",
+      "rust",
+      "ui",
+      "upgrade"
+    ]
+  },
+  "version": 1
+}

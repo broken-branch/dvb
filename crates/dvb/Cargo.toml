@@ -1,0 +1,31 @@
+[package]
+name = "dvb"
+description = "The one dvb binary: engine, run, desk and the owner verbs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive", "env"] }
+dvb-core = { version = "0.1.0", path = "../dvb-core" }
+dvb-cli = { version = "0.1.0", path = "../dvb-cli" }
+dvb-desk = { version = "0.1.0", path = "../dvb-desk" }
+dvb-engine = { version = "0.1.0", path = "../dvb-engine" }
+dvb-run = { version = "0.1.0", path = "../dvb-run" }
+tokio = { version = "1.53.3", features = ["rt-multi-thread"] }
+
+[dev-dependencies]
+axum = "0.8.9"
+async-trait = "0.1.92"
+# The crash suite injects failures into an in-process engine.
+dvb-engine = { path = "../dvb-engine", features = ["failpoints", "test-support"] }
+dvb-forge = { path = "../dvb-forge" }
+fail = "0.5.1"
+serde_json = "1.0.154"
+tempfile = "3.27.0"
+tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "time"] }

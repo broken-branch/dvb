@@ -1,0 +1,19 @@
+[
+  {
+    "run": ["plan", {"tasks": [{"title": "{{goal_text}}", "role": "backend", "summary": "A one-file edit, made by the Fake provider.", "review": "code"}]}],
+    "save": "plan"
+  },
+  {
+    "run": ["task start", {"task": "${plan.tasks.0}", "role": "backend", "reason": "Too early on purpose: the owner has not said yes, so this is refused."}]
+  },
+  {
+    "run": ["ask", {
+      "subject": "Start this plan? {{goal_text}}",
+      "options": [
+        {"text": "Yes, start it", "effect": "The Backend builder starts the one task.", "approves_plan": true},
+        {"text": "Not yet", "effect": "Nothing starts; the plan is parked until you resume it."}
+      ],
+      "recommended": 1
+    }]
+  }
+]

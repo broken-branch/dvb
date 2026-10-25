@@ -1,0 +1,12 @@
+{"id":1,"result":{"userAgent":"codex-cli/0.159.2","codexHome":"/work/home/.codex"}}
+{"id":2,"result":{"rateLimits":{"limitId":"codex","limitName":null,"planType":"pro","primary":{"usedPercent":67,"windowDurationMins":10080,"resetsAt":1791046706},"secondary":null},"rateLimitsByLimitId":null}}
+{"id":3,"result":{"thread":{"id":"th_1","preview":"","ephemeral":false},"model":"gpt-6.1-sol","modelProvider":"openai","cwd":"/ws","approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"},"reasoningEffort":null}}
+{"method":"thread/started","params":{"thread":{"id":"th_1"}}}
+{"id":4,"result":{"turn":{"id":"tu_1","status":"inProgress","items":[]}}}
+{"method":"turn/started","params":{"threadId":"th_1","turn":{"id":"tu_1","status":"inProgress","items":[]}}}
+{"method":"item/completed","params":{"threadId":"th_1","turnId":"tu_1","item":{"type":"userMessage","id":"i0","content":[]}}}
+{"method":"item/completed","params":{"threadId":"th_1","turnId":"tu_1","item":{"type":"commandExecution","id":"i1","command":"ls","cwd":"/ws","status":"completed","aggregatedOutput":"a.txt"}}}
+{"method":"item/completed","params":{"threadId":"th_1","turnId":"tu_1","item":{"type":"agentMessage","id":"i2","text":"42"}}}
+{"method":"thread/tokenUsage/updated","params":{"threadId":"th_1","turnId":"tu_1","tokenUsage":{"last":{"cachedInputTokens":300,"inputTokens":1000,"outputTokens":20,"reasoningOutputTokens":5,"totalTokens":1020},"total":{"cachedInputTokens":300,"inputTokens":1000,"outputTokens":20,"reasoningOutputTokens":5,"totalTokens":1020},"modelContextWindow":272000}}}
+{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":67,"windowDurationMins":10080,"resetsAt":1791046706},"secondary":null}}}
+{"method":"turn/completed","params":{"threadId":"th_1","turn":{"id":"tu_1","status":"completed","items":[]}}}

@@ -1,0 +1,17 @@
+# The owner API socket. Open to every local user: the engine admits
+# only the install's owner and itself, by SO_PEERCRED.
+[Unit]
+Description=dvb engine socket (owner API)
+
+[Socket]
+ListenStream=/run/dvb/engine.sock
+FileDescriptorName=engine
+Service=dvb.service
+SocketUser=dvb
+SocketGroup=dvb
+SocketMode=0666
+DirectoryMode=0755
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

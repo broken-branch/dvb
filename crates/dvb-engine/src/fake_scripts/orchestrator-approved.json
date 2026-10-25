@@ -1,0 +1,4 @@
+[
+  {"run": ["task start", {"task": "{{task}}", "role": "{{task_role}}", "model": "sonnet", "reason": "An alias on purpose: retry with the active hire after refusal."}]},
+  {"run": ["task start", {"task": "{{task}}", "role": "{{task_role}}", "reason": "The owner approved the plan."}]}
+]

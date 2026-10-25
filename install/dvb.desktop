@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=dvb
+Comment=Your team of coding agents
+Exec=/opt/dvb/current/dvb app
+Icon=dvb
+# Chromium's Wayland app id for the window `dvb app` opens:
+# <browser>-<host>__<path>-<profile>, the profile naming the desk's port.
+StartupWMClass=chromium-127.0.0.1__launch-dvb-127.0.0.1-7300
+Terminal=false
+Categories=Development;

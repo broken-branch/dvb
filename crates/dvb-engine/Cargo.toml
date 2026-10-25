@@ -1,0 +1,56 @@
+[package]
+name = "dvb-engine"
+description = "The engine: API, rules, dispatch, reconcile, publish, units, usage, update."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "2.0.18"
+async-trait = "0.1.92"
+axum = "0.8.9"
+utoipa = "6.0.0"
+utoipa-axum = "0.3.0"
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+dvb-core = { version = "0.1.0", path = "../dvb-core" }
+dvb-forge = { version = "0.1.0", path = "../dvb-forge" }
+dvb-store = { version = "0.1.0", path = "../dvb-store" }
+fail = "0.5.1"
+futures-util = "0.3.34"
+listenfd = "1.0.2"
+minisign-verify = "0.3.0"
+rand = "0.10.3"
+rustix = { version = "1.1.5", features = ["fs"] }
+semver = "1.0.28"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "net", "process", "time", "sync", "macros", "signal"] }
+toml = "1.1.8"
+ulid = "3.0.0"
+zbus = { version = "6.0.0", default-features = false, features = ["tokio", "tracing"] }
+
+tempfile = "3.27.0"
+[features]
+# Fixture entry points; enabled by the self dev dependency for all CI tests.
+test-support = []
+# Crash injection (fail-rs) at every append and effect, for the crash suite;
+# never in a release build.
+failpoints = ["fail/failpoints"]
+
+[dev-dependencies]
+dvb-engine = { path = ".", features = ["test-support"] }
+dvb-cli = { version = "0.1.0", path = "../dvb-cli" }
+dvb-run = { version = "0.1.0", path = "../dvb-run" }
+futures-util = "0.3.34"
+minisign = "0.10.0"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde_json = "1.0.154"
+tempfile = "3.27.0"
+tokio = { version = "1.53.3", features = ["macros", "rt", "test-util"] }
+tower = { version = "0.5.3", features = ["util"] }

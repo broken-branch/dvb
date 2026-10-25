@@ -1,0 +1,6 @@
+{
+  // The owner's comments must survive.
+  // "work": {"label": "Work"},
+  /* "work.docs": {"label": "Docs", "action": "xdg-open https://example.org/a//b"} */
+  // Keep this comment, too. }
+}

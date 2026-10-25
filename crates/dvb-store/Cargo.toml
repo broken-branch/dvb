@@ -1,0 +1,21 @@
+[package]
+name = "dvb-store"
+description = "SQLite store: the event log, migrations and projections."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "2.0.18"
+dvb-core = { version = "0.1.0", path = "../dvb-core" }
+refinery = { version = "0.10.0", features = ["rusqlite"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+tempfile = "3.27.0"

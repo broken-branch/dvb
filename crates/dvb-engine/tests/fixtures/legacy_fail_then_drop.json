@@ -1,0 +1,257 @@
+[
+  {
+    "id": 1,
+    "at": 1001,
+    "actor": "engine",
+    "project": "p",
+    "kind": "project.added",
+    "payload": {
+      "id": "p",
+      "name": "project",
+      "repo": "/local/repo",
+      "default_branch": "main",
+      "ci": "no_ci"
+    },
+    "evidence": null
+  },
+  {
+    "id": 2,
+    "at": 1002,
+    "actor": "engine",
+    "project": "p",
+    "kind": "goal.stated",
+    "payload": {
+      "goal": "dropped",
+      "text": "dropped",
+      "from_issue": null
+    },
+    "evidence": null
+  },
+  {
+    "id": 3,
+    "at": 1003,
+    "actor": "engine",
+    "project": "p",
+    "kind": "plan.proposed",
+    "payload": {
+      "goal": "dropped",
+      "tasks": [
+        {
+          "task": "failed",
+          "title": "failed",
+          "role": "backend",
+          "review": "code",
+          "summary": "x"
+        },
+        {
+          "task": "stopped",
+          "title": "stopped",
+          "role": "backend",
+          "review": "code",
+          "summary": "x"
+        },
+        {
+          "task": "stopped-planned",
+          "title": "stopped-planned",
+          "role": "backend",
+          "review": "code",
+          "summary": "x"
+        }
+      ]
+    },
+    "evidence": null
+  },
+  {
+    "id": 4,
+    "at": 1004,
+    "actor": "engine",
+    "project": "p",
+    "kind": "goal.approved",
+    "payload": {
+      "goal": "dropped"
+    },
+    "evidence": null
+  },
+  {
+    "id": 5,
+    "at": 1005,
+    "actor": "engine",
+    "project": "p",
+    "kind": "task.state",
+    "payload": {
+      "task": "failed",
+      "from": {
+        "state": "running"
+      },
+      "to": {
+        "state": "failed",
+        "reason": "push failed: refused"
+      }
+    },
+    "evidence": null
+  },
+  {
+    "id": 6,
+    "at": 1006,
+    "actor": "engine",
+    "project": "p",
+    "kind": "task.failed",
+    "payload": {
+      "task": "failed",
+      "reason": "push failed: refused"
+    },
+    "evidence": null
+  },
+  {
+    "id": 7,
+    "at": 1007,
+    "actor": "engine",
+    "project": "p",
+    "kind": "task.state",
+    "payload": {
+      "task": "stopped",
+      "from": {
+        "state": "running"
+      },
+      "to": {
+        "state": "stopped",
+        "was": {
+          "state": "running"
+        }
+      }
+    },
+    "evidence": null
+  },
+  {
+    "id": 8,
+    "at": 1008,
+    "actor": "engine",
+    "project": "p",
+    "kind": "goal.stated",
+    "payload": {
+      "goal": "kept",
+      "text": "kept",
+      "from_issue": null
+    },
+    "evidence": null
+  },
+  {
+    "id": 9,
+    "at": 1009,
+    "actor": "engine",
+    "project": "p",
+    "kind": "plan.proposed",
+    "payload": {
+      "goal": "kept",
+      "tasks": [
+        {
+          "task": "kept-failed",
+          "title": "kept-failed",
+          "role": "backend",
+          "review": "code",
+          "summary": "x"
+        },
+        {
+          "task": "kept-stopped",
+          "title": "kept-stopped",
+          "role": "backend",
+          "review": "code",
+          "summary": "x"
+        }
+      ]
+    },
+    "evidence": null
+  },
+  {
+    "id": 10,
+    "at": 1010,
+    "actor": "engine",
+    "project": "p",
+    "kind": "goal.approved",
+    "payload": {
+      "goal": "kept"
+    },
+    "evidence": null
+  },
+  {
+    "id": 11,
+    "at": 1011,
+    "actor": "engine",
+    "project": "p",
+    "kind": "task.state",
+    "payload": {
+      "task": "kept-failed",
+      "from": {
+        "state": "running"
+      },
+      "to": {
+        "state": "failed",
+        "reason": "push failed: refused"
+      }
+    },
+    "evidence": null
+  },
+  {
+    "id": 12,
+    "at": 1012,
+    "actor": "engine",
+    "project": "p",
+    "kind": "task.failed",
+    "payload": {
+      "task": "kept-failed",
+      "reason": "push failed: refused"
+    },
+    "evidence": null
+  },
+  {
+    "id": 13,
+    "at": 1013,
+    "actor": "engine",
+    "project": "p",
+    "kind": "task.state",
+    "payload": {
+      "task": "kept-stopped",
+      "from": {
+        "state": "running"
+      },
+      "to": {
+        "state": "stopped",
+        "was": {
+          "state": "running"
+        }
+      }
+    },
+    "evidence": null
+  },
+  {
+    "id": 14,
+    "at": 1014,
+    "actor": "engine",
+    "project": "p",
+    "kind": "task.state",
+    "payload": {
+      "task": "stopped-planned",
+      "from": {
+        "state": "planned"
+      },
+      "to": {
+        "state": "stopped",
+        "was": {
+          "state": "planned"
+        }
+      }
+    },
+    "evidence": null
+  },
+  {
+    "id": 15,
+    "at": 1015,
+    "actor": "engine",
+    "project": "p",
+    "kind": "goal.dropped",
+    "payload": {
+      "goal": "dropped"
+    },
+    "evidence": null
+  }
+]

@@ -1,0 +1,5 @@
+[Unit]
+Description=dvb run %i (Fake provider, no login)
+
+[Service]
+BindReadOnlyPaths=/var/lib/dvb/work/%i/fake-script.json

@@ -1,0 +1,30 @@
+{
+  "dvb": {
+    "icon": "󰒓",
+    "label": "dvb"
+  },
+  "dvb.open": {
+    "label": "Open dvb",
+    "action": "dvb app"
+  },
+  "dvb.status": {
+    "label": "Status",
+    "action": "omarchy-launch-floating-terminal-with-presentation dvb status"
+  },
+  "dvb.goal": {
+    "label": "New goal",
+    "action": "set -euo pipefail\noutput=$(dvb project list)\n[[ -n $output ]] || exit 0\nmapfile -t projects <<< \"$output\"\nif (( ${#projects[@]} == 1 )); then\n  selected=${projects[0]}\nelse\n  selected=$(omarchy-menu-select 'Project' \"${projects[@]}\") || exit 0\nfi\n[[ -n $selected ]] || exit 0\nread -r name project repo <<< \"$selected\"\ntext=$(omarchy-menu-input 'New goal') || exit 0\n[[ -n $text ]] || exit 0\nif ! out=$(dvb goal \"$project\" -- \"$text\" 2>&1); then notify-send dvb \"$out\"; fi"
+  },
+  "dvb.answer": {
+    "label": "Answer a question",
+    "action": "set -euo pipefail\noutput=$(dvb status)\nmapfile -t questions < <(printf '%s\\n' \"$output\" | sed -n '/^Needs you: .* ([^()]*)$/p')\n(( ${#questions[@]} )) || exit 0\nselected=$(omarchy-menu-select 'Answer a question' \"${questions[@]}\") || exit 0\n[[ -n $selected ]] || exit 0\nqid=${selected##* (}\nqid=${qid%)}\ntext=$(omarchy-menu-input 'Answer a question') || exit 0\n[[ -n $text ]] || exit 0\nif ! out=$(dvb answer \"$qid\" --reply=\"$text\" 2>&1); then notify-send dvb \"$out\"; fi"
+  },
+  "dvb.pause": {
+    "label": "Pause everything",
+    "action": "set -euo pipefail\noutput=$(dvb project list)\n[[ -n $output ]] || exit 0\nmapfile -t projects <<< \"$output\"\nfor selected in \"${projects[@]}\"; do\n  read -r name project repo <<< \"$selected\"\n  dvb pause \"$project\"\ndone"
+  },
+  "dvb.resume": {
+    "label": "Resume everything",
+    "action": "set -euo pipefail\noutput=$(dvb project list)\n[[ -n $output ]] || exit 0\nmapfile -t projects <<< \"$output\"\nfor selected in \"${projects[@]}\"; do\n  read -r name project repo <<< \"$selected\"\n  dvb resume \"$project\"\ndone"
+  }
+}

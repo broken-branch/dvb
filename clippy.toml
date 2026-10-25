@@ -1,0 +1,7 @@
+too-many-lines-threshold = 150
+disallowed-methods = [
+  { path = "std::time::SystemTime::now", reason = "Read time through dvb_core::Clock" },
+  { path = "std::time::Instant::now", reason = "Read time through dvb_core::Clock" },
+  { path = "chrono::Utc::now", reason = "Read time through dvb_core::Clock" },
+  { path = "chrono::Local::now", reason = "Read time through dvb_core::Clock" },
+]

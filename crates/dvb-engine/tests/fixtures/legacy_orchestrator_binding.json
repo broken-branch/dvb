@@ -1,0 +1,140 @@
+[
+  {
+    "id": 1,
+    "at": 1001,
+    "actor": "engine",
+    "project": "p",
+    "kind": "project.added",
+    "payload": {
+      "id": "p",
+      "name": "project",
+      "repo": "/local/repo",
+      "default_branch": "main",
+      "ci": "no_ci"
+    },
+    "evidence": null
+  },
+  {
+    "id": 2,
+    "at": 1002,
+    "actor": "engine",
+    "project": "p",
+    "kind": "hire.added",
+    "payload": {
+      "id": "h-backend",
+      "role": "backend",
+      "model": "fake-1",
+      "effort": "medium",
+      "status": "active"
+    },
+    "evidence": null
+  },
+  {
+    "id": 3,
+    "at": 1003,
+    "actor": "engine",
+    "project": "p",
+    "kind": "goal.stated",
+    "payload": {
+      "goal": "g1",
+      "text": "Backend work",
+      "from_issue": null
+    },
+    "evidence": null
+  },
+  {
+    "id": 4,
+    "at": 1004,
+    "actor": "engine",
+    "project": "p",
+    "kind": "plan.proposed",
+    "payload": {
+      "goal": "g1",
+      "tasks": [
+        {
+          "task": "t1",
+          "title": "Backend work",
+          "role": "backend",
+          "review": "code",
+          "summary": "One edit"
+        }
+      ]
+    },
+    "evidence": null
+  },
+  {
+    "id": 5,
+    "at": 1005,
+    "actor": "engine",
+    "project": "p",
+    "kind": "goal.approved",
+    "payload": {
+      "goal": "g1"
+    },
+    "evidence": null
+  },
+  {
+    "id": 6,
+    "at": 1006,
+    "actor": "engine",
+    "project": "p",
+    "kind": "goal.stated",
+    "payload": {
+      "goal": "g2",
+      "text": "Frontend work",
+      "from_issue": null
+    },
+    "evidence": null
+  },
+  {
+    "id": 7,
+    "at": 1007,
+    "actor": "engine",
+    "project": "p",
+    "kind": "plan.proposed",
+    "payload": {
+      "goal": "g2",
+      "tasks": [
+        {
+          "task": "t2",
+          "title": "Frontend work",
+          "role": "frontend",
+          "review": "code",
+          "summary": "One edit"
+        }
+      ]
+    },
+    "evidence": null
+  },
+  {
+    "id": 8,
+    "at": 1008,
+    "actor": "engine",
+    "project": "p",
+    "kind": "goal.approved",
+    "payload": {
+      "goal": "g2"
+    },
+    "evidence": null
+  },
+  {
+    "id": 9,
+    "at": 1009,
+    "actor": "engine",
+    "project": "p",
+    "kind": "run.started",
+    "payload": {
+      "run": "historical",
+      "task": null,
+      "role": "orchestrator",
+      "hire": "h-orchestrator",
+      "model": "fake-1",
+      "vendor": "fake",
+      "effort": "medium",
+      "reason": "The owner approved the plan.",
+      "reviews": null,
+      "base": "base"
+    },
+    "evidence": null
+  }
+]

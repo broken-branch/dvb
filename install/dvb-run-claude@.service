@@ -1,0 +1,5 @@
+[Unit]
+Description=dvb run %i (Claude)
+
+[Service]
+BindPaths=/var/lib/dvb/logins/claude:/var/lib/dvb/work/%i/home/.claude

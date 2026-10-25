@@ -1,0 +1,7 @@
+# The owner's response style: the instruction put in the orchestrator's
+# prompt. It applies to what the orchestrator writes (replies, plans, questions);
+# engine events have one plain wording. A release file: a change is a PR.
+simple = "Write plain words a non-programmer follows. Short sentences. No jargon and no code names: say what happens and what it means for the owner."
+clear = "Write plain, direct sentences. Name things by what they do, explain a technical word the first time you use it, and keep it brief."
+technical = "Write precise technical language. Name files, commands, states and trade-offs. Assume the owner reads code."
+expert = "Write terse, exact notes. Assume deep expertise: no explanations, use identifiers, states and reasons."

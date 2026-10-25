@@ -1,0 +1,53 @@
+name: stranger
+# A stranger's install, run by hand to check a published release: the latest release
+# installed the way README.md says, then one goal taken to a merged PR with the Fake
+# provider and forge. It checks a release, not a tree, so it never runs on a pull
+# request or push.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  stranger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: The latest published release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "::notice::Installing release $tag"
+      # The release's own acceptance script, so it checks what that release does.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - name: Install the release as README.md says, with the Fake provider and forge and no network
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          sudo apt-get -o DPkg::Lock::Timeout=300 update -q && sudo apt-get -o DPkg::Lock::Timeout=300 install -yq minisign
+          [ -x /usr/lib/polkit-1/polkitd ] || sudo apt-get -o DPkg::Lock::Timeout=300 install -yq polkitd
+          for d in dvb.service.d dvb-run-fake@.service.d; do sudo install -d "/etc/systemd/system/$d"; done
+          printf '[Service]\nEnvironment=DVB_FAKE=1\nIPAddressDeny=any\n' | sudo tee /etc/systemd/system/dvb.service.d/e2e.conf
+          printf '[Service]\nIPAddressDeny=any\n' | sudo tee /etc/systemd/system/dvb-run-fake@.service.d/e2e.conf
+          dir=$(mktemp -d -p "$RUNNER_TEMP")
+          trap 'rm -f "$dir/token"' EXIT
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern install.sh --dir "$dir"
+          # The default token opens the release whether the repository is private or public.
+          (umask 077 && printf '%s\n' "$GH_TOKEN" > "$dir/token")
+          cd "$dir"
+          sudo sh install.sh --engine --cockpit --token-file "$dir/token"
+      - name: playwright-core (uses the runner's Chrome)
+        run: npm install --prefix scripts/e2e --no-save "playwright-core@$(node -p 'require("./ui/package.json").devDependencies["playwright-core"]')"
+      - name: A goal to a merged PR on /opt/dvb/current/dvb, and the six acceptance checks
+        run: scripts/run-e2e.sh
+      - name: Engine and run logs
+        if: failure()
+        run: sudo journalctl -u dvb.service -u 'dvb-run-*' --no-pager -o short-precise | tail -300

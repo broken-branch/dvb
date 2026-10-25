@@ -1,0 +1,4 @@
+[
+  {"write": {"path": "docs/skeleton.md", "text": "# {{task_title}}\n\nWritten by the Fake provider for task {{task}}.\n"}},
+  {"usage": {"uncached_in": 1200, "cached_in": 0, "out": 300}}
+]

@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "Finding": {
+      "additionalProperties": false,
+      "description": "One review finding. Its schema is generated into `prompts/verdict.schema.json`.",
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "line": {
+          "description": "Required; `null` when the finding has no line, otherwise 1 or more.",
+          "format": "int32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "open": {
+          "description": "True while the finding blocks the merge.",
+          "type": "boolean"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "severity",
+        "file",
+        "line",
+        "title",
+        "detail",
+        "open"
+      ],
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "urn:dvb:verdict",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The body of `dvb run verdict`. The engine adds head, pr, model, vendor and\nrole from its own record of the run; a body that fails this schema is not a verdict.",
+  "examples": [
+    {
+      "findings": [],
+      "summary": "Reviewed the diff; cargo test and clippy ran clean."
+    },
+    {
+      "findings": [
+        {
+          "detail": "Check the task is not stopped in the same transaction before sending.",
+          "file": "crates/dvb-engine/src/publish/mod.rs",
+          "line": 42,
+          "open": true,
+          "severity": "high",
+          "title": "Push happens before the stopped check"
+        }
+      ],
+      "summary": "One blocking finding."
+    }
+  ],
+  "properties": {
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/Finding"
+      },
+      "type": "array"
+    },
+    "summary": {
+      "description": "What was reviewed and what was run. In a project without CI, say which local gates ran.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "findings",
+    "summary"
+  ],
+  "title": "dvb run verdict",
+  "type": "object"
+}
