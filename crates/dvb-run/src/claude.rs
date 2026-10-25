@@ -7,7 +7,7 @@
 //! `rate_limit_event` (the vendor window) and `result` (totals, errors). Others
 //! (`system`, `user`, hook and stream events) are ignored.
 
-use crate::stream::{Pipe, pin_matches};
+use crate::stream::{Pipe, StderrTail, pin_matches};
 use dvb_core::Effort;
 use dvb_core::Timestamp;
 use dvb_core::event::ServedModel;
@@ -43,6 +43,8 @@ pub struct Claude {
     /// not while another run of the project may still be installing it into
     /// their shared RUSTUP_HOME, which rustup does not guard.
     pub toolchain_installs: bool,
+    /// Where the CLI's stderr goes.
+    pub stderr: StderrTail,
 }
 
 impl Provider for Claude {
@@ -70,7 +72,7 @@ impl Provider for Claude {
         if !self.toolchain_installs {
             cmd.env("RUSTUP_AUTO_INSTALL", "0");
         }
-        let pipe = Pipe::spawn(cmd, prompt.as_bytes().to_vec())
+        let pipe = Pipe::spawn(cmd, prompt.as_bytes().to_vec(), &self.stderr)
             .map_err(|e| ProviderError::Other(format!("{}: {e}", self.bin.display())))?;
         Ok(Box::new(ClaudeSession {
             pipe,
@@ -376,9 +378,10 @@ impl Parser {
             ))),
             // A signal leaves no code, which is not a success.
             Some(_) => RunItem::Ended(ExitStatus { code: exit }),
-            None => RunItem::Error(ProviderError::Parse(format!(
-                "the stream ended without a result (exit {exit:?})"
-            ))),
+            None => RunItem::Error(ProviderError::Parse(match exit {
+                Some(code) => format!("the stream ended without a result (exit code {code})"),
+                None => "the stream ended without a result (ended by a signal)".to_owned(),
+            })),
         }]
     }
 }
@@ -548,6 +551,7 @@ mod tests {
             bin: stub,
             run_dir: dir.path().to_owned(),
             toolchain_installs: false,
+            stderr: StderrTail::default(),
         };
         let mut s = p
             .start(
@@ -597,6 +601,7 @@ mod tests {
             bin: stub,
             run_dir: dir.path().to_owned(),
             toolchain_installs: true,
+            stderr: StderrTail::default(),
         };
         let (send, recv) = std::sync::mpsc::channel();
         let ws = dir.path().to_owned();
@@ -652,7 +657,7 @@ mod tests {
             );
             let command = Command::new(stub);
             let mut session = ClaudeSession {
-                pipe: Pipe::spawn(command, Vec::new()).unwrap(),
+                pipe: Pipe::spawn(command, Vec::new(), &StderrTail::default()).unwrap(),
                 parser: Parser::new("pin"),
                 queue: VecDeque::new(),
                 ended: false,
@@ -684,7 +689,7 @@ mod tests {
         crate::testutil::write_executable(&stub, &format!("#!/bin/sh\n{script}"));
         let command = Command::new(stub);
         let mut session = ClaudeSession {
-            pipe: Pipe::spawn(command, Vec::new()).unwrap(),
+            pipe: Pipe::spawn(command, Vec::new(), &StderrTail::default()).unwrap(),
             parser: Parser::new("pin"),
             queue: VecDeque::new(),
             ended: false,

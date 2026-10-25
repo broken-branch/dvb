@@ -89,7 +89,7 @@ async fn finished(e: &AppState) {
             && proj
                 .questions
                 .values()
-                .any(|q| q.view.subject.starts_with("Done:"))
+                .any(|q| q.view.subject.starts_with("What next? Done:"))
             && !proj.live_runs().any(|r| r.project == ProjectId::new("p")))
         .then_some(())
     })

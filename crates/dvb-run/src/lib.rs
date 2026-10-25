@@ -14,6 +14,7 @@ mod usage;
 mod verb;
 
 pub use exec::prepare_build_cache;
+pub use stream::StderrTail;
 
 /// `dvb run exec <run>` or `dvb run <verb> [<json>]`; returns the exit code.
 pub async fn main(args: &[String]) -> std::process::ExitCode {

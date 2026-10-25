@@ -202,11 +202,14 @@ async fn socket_status_filters_only_finished_goals_and_preserves_other_output() 
         "Task a-running: a-running - Working\nTask b-failed: b-failed - Failed: boom\n";
     let failed = "Needs you: b-failed (b-failed) - Failed: dvb retry b-failed\n";
     let paused = "Project p is paused: nothing new starts until dvb resume p\n";
+    // Listed, though not counted.
+    let resume = |name| format!("Needs you: Project {name} ({name}) - Paused: dvb resume {name}\n");
     assert_eq!(
         status(&dir, &["p"]),
         format!(
             "1 running, 2 need you\n{paused}{active_goals}2 finished goals not shown (dvb status p \
-                --all)\n{active_tasks}{failed}{}",
+                --all)\n{active_tasks}{failed}{}{}",
+            resume("p"),
             questions("p-question")
         )
     );
@@ -215,19 +218,23 @@ async fn socket_status_filters_only_finished_goals_and_preserves_other_output() 
         format!(
             "1 running, 2 need you\n{paused}Goal a-drop: Dropped - Dropped\nGoal b-done: Completed - \
                 Done\n{active_goals}{active_tasks}Task y-drop: y-drop - Cancelled\nTask \
-                z-done: z-done - Done\n{failed}{}",
+                z-done: z-done - Done\n{failed}{}{}",
+            resume("p"),
             questions("p-question")
         )
     );
     let unfinished = format!(
-        "1 running, 1 need you\nProject q is paused: nothing new starts until dvb resume q\nGoal q-approved: {ascii} - Approved\nGoal q-stated: {ascii}… - Stated\n{}",
+        "1 running, 1 need you\nProject q is paused: nothing new starts until dvb resume q\nGoal q-approved: {ascii} - Approved\nGoal q-stated: {ascii}… - Stated\n{}{}",
+        resume("q"),
         questions("q-question")
     );
     assert_eq!(status(&dir, &["q"]), unfinished);
     assert_eq!(status(&dir, &["q", "--all"]), unfinished);
 
     let overall = format!(
-        "2 running, 3 need you\n{failed}{}{}",
+        "2 running, 3 need you\n{failed}{}{}{}{}",
+        resume("p"),
+        resume("q"),
         questions("p-question"),
         questions("q-question")
     );
@@ -402,7 +409,8 @@ async fn socket_status_lists_each_counted_task_once_with_its_stopped_question() 
     // Per project: four counted tasks, and the general, resume and failed
     // questions; one and two leave their stopped task stopped and count with it.
     assert!(global.starts_with("0 running, 14 need you\n"), "{global}");
-    assert_eq!(global.matches("Needs you:").count(), 14, "{global}");
+    // And each paused project, not counted.
+    assert_eq!(global.matches("Needs you:").count(), 16, "{global}");
     for name in ["p", "q"] {
         for (suffix, line) in [
             ("failed", "Failed: dvb retry"),
@@ -426,7 +434,7 @@ async fn socket_status_lists_each_counted_task_once_with_its_stopped_question() 
         assert!(!global.contains("Or answer"), "{global}");
         let scoped = status(tmp.path(), &[name]);
         assert!(scoped.starts_with("0 running, 7 need you\n"), "{scoped}");
-        assert_eq!(scoped.matches("Needs you:").count(), 7, "{scoped}");
+        assert_eq!(scoped.matches("Needs you:").count(), 8, "{scoped}");
         assert!(
             scoped.contains(&format!(
                 "Needs you: one ({name}-one) - Stopped: dvb resume {name}-one\n  Or answer: \
@@ -493,7 +501,8 @@ async fn socket_status_lists_a_task_stopped_with_no_question() {
     assert!(questions.is_empty(), "{questions:?}");
     assert_eq!(
         status(tmp.path(), &[]),
-        "0 running, 1 need you\nNeeds you: Held work (held) - Stopped: dvb resume held\n"
+        "0 running, 1 need you\nNeeds you: Held work (held) - Stopped: dvb resume held\n\
+         Needs you: Project p (p) - Paused: dvb resume p\n"
     );
     assert_eq!(
         status(tmp.path(), &["--bar"]),

@@ -653,6 +653,11 @@ event_kinds! {
             /// when it left one. Absent otherwise and in older events.
             #[serde(default, skip_serializing_if = "Option::is_none")]
             detail: Option<String>,
+            /// For a crashed run: the last lines its session's CLI wrote to
+            /// stderr, secret-scrubbed, at most 400 bytes. Absent otherwise
+            /// and in older events.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            stderr: Option<String>,
         },
         /// The run's unit is about to start: its time limit counts from here,
         /// not from `run.started` (a queued run has no unit yet).

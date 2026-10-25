@@ -192,6 +192,7 @@ async fn fixture_plan_review(
                 run: built,
                 reason: dvb_core::event::EndReason::Completed,
                 detail: None,
+                stderr: None,
             },
         ]);
     }
@@ -1227,6 +1228,7 @@ async fn a_retry_after_a_failed_pr_opening_opens_it_and_merges() {
                 run: builder,
                 reason: dvb_core::event::EndReason::Completed,
                 detail: None,
+                stderr: None,
             },
             EventKind::BranchPublished {
                 task: t.clone(),
@@ -1354,6 +1356,7 @@ async fn merging_the_first_of_two_approved_tasks_starts_the_second_without_an_or
             run: RunId::new("reviewer"),
             reason: dvb_core::event::EndReason::Completed,
             detail: None,
+            stderr: None,
         }])
     })
     .unwrap();
@@ -1415,6 +1418,7 @@ async fn an_automatic_start_at_the_cap_is_admitted_when_another_goals_run_ends()
             run: RunId::new("reviewer"),
             reason: dvb_core::event::EndReason::Completed,
             detail: None,
+            stderr: None,
         }])
     })
     .unwrap();
@@ -1490,6 +1494,7 @@ async fn a_failed_automatic_preparation_retries_without_another_run_ending() {
             run: RunId::new("reviewer"),
             reason: dvb_core::event::EndReason::Completed,
             detail: None,
+            stderr: None,
         }])
     })
     .unwrap();
@@ -1545,6 +1550,7 @@ async fn failed_merge(f: &Fixture, fail: Option<&str>) {
         run: RunId::new("reviewer"),
         reason: dvb_core::event::EndReason::Completed,
         detail: None,
+        stderr: None,
     });
     f.e.append_checked(Some(&ProjectId::new("p")), Actor::Engine, |_, _| Ok(kinds))
         .unwrap();
@@ -1803,6 +1809,7 @@ async fn unchanged_fix_round(summary: Option<&str>) {
         run: RunId::new("reviewer"),
         reason: dvb_core::event::EndReason::Completed,
         detail: None,
+        stderr: None,
     });
     kinds.push(EventKind::TaskStateChanged {
         task: f.task.clone(),
@@ -1818,6 +1825,7 @@ async fn unchanged_fix_round(summary: Option<&str>) {
         run: reviewed,
         reason: dvb_core::event::EndReason::Completed,
         detail: None,
+        stderr: None,
     };
     f.e.append_checked(Some(&p), Actor::Engine, |_, _| Ok(vec![ended]))
         .unwrap();
@@ -2135,6 +2143,7 @@ async fn merge_close_scan_and_status_start_no_run() {
         run: RunId::new("reviewer"),
         reason: dvb_core::event::EndReason::Completed,
         detail: None,
+        stderr: None,
     });
     e.append_checked(Some(&ProjectId::new("p")), Actor::Engine, |_, _| Ok(kinds))
         .unwrap();
@@ -2228,6 +2237,7 @@ async fn awaiting_ci_on(reviewer_ended: bool, others: u32, names: &[&str]) -> Fi
             run: RunId::new("reviewer"),
             reason: dvb_core::event::EndReason::Completed,
             detail: None,
+            stderr: None,
         });
     }
     for i in 0..others {
@@ -2301,6 +2311,8 @@ async fn an_ordinary_failure_gets_one_rerun_before_a_round() {
         } else {
             ordinary_failure(&f, 2);
             dispatch::step_now(&f.e, &f.task).await.unwrap();
+            assert!(f.fake.calls().iter().any(|call| call == "main_checks"));
+            assert!(f.e.proj().questions.is_empty(), "main's CI is unknown");
             assert_eq!(state(&f), TaskState::Preparing);
             assert_eq!(f.fake.reruns(&f.repo), vec![1]);
             assert!(
@@ -2449,6 +2461,7 @@ async fn conflicts_before_review_and_at_the_cap_do_not_charge_a_round() {
                     run,
                     reason: dvb_core::event::EndReason::Completed,
                     detail: None,
+                    stderr: None,
                 },
                 EventKind::TaskStateChanged {
                     task: f.task.clone(),
@@ -3154,6 +3167,7 @@ async fn a_fix_round_waits_for_the_reviewer_to_end() {
             run: RunId::new("reviewer"),
             reason: dvb_core::event::EndReason::Completed,
             detail: None,
+            stderr: None,
         }])
     })
     .unwrap();
@@ -3177,6 +3191,7 @@ async fn a_fix_round_waits_for_a_free_run_slot() {
             run: RunId::new("other0"),
             reason: dvb_core::event::EndReason::Completed,
             detail: None,
+            stderr: None,
         }])
     })
     .unwrap();
@@ -3536,6 +3551,7 @@ async fn main_moving_while_the_tasks_run_is_live_waits_for_its_end() {
             run: RunId::new("reviewer"),
             reason: dvb_core::event::EndReason::Completed,
             detail: None,
+            stderr: None,
         }])
     })
     .unwrap();
@@ -4961,6 +4977,7 @@ async fn review_fixture(review: ReviewKind, design_reviewer: bool, reviewed: boo
             run: RunId::new("reviewer"),
             reason: dvb_core::event::EndReason::Completed,
             detail: None,
+            stderr: None,
         });
     }
     kinds.extend([
@@ -5493,6 +5510,7 @@ async fn recovery_after_code_approval_admits_design_without_retrying_code() {
             run: code.run.clone(),
             reason: dvb_core::event::EndReason::Completed,
             detail: None,
+            stderr: None,
         }])
     })
     .unwrap();
@@ -5840,6 +5858,7 @@ async fn routine_review(routine: bool, built_by: &str) -> Fixture {
             run: b1,
             reason: dvb_core::event::EndReason::Completed,
             detail: None,
+            stderr: None,
         },
         EventKind::BranchPublished {
             task: f.task.clone(),
@@ -5851,6 +5870,7 @@ async fn routine_review(routine: bool, built_by: &str) -> Fixture {
             run: RunId::new("reviewer"),
             reason: dvb_core::event::EndReason::Completed,
             detail: None,
+            stderr: None,
         },
         EventKind::TaskStateChanged {
             task: f.task.clone(),
@@ -5872,6 +5892,7 @@ async fn sent_back(f: &Fixture, head: &str) -> (RunId, HireId) {
         run: RunId::new(format!("{}-code-reviewer-{head}-true", f.task)),
         reason: dvb_core::event::EndReason::Completed,
         detail: None,
+        stderr: None,
     };
     f.e.append_checked(Some(&ProjectId::new("p")), Actor::Engine, |_, _| {
         Ok(vec![ended])
@@ -5898,6 +5919,7 @@ async fn fix_published(f: &Fixture, run: RunId, round: u8, head: &str) {
             run,
             reason: dvb_core::event::EndReason::Completed,
             detail: None,
+            stderr: None,
         },
         EventKind::BranchPublished {
             task: f.task.clone(),

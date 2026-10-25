@@ -8,7 +8,7 @@
 //! like an agent CLI would, and may save the reply; later strings may use
 //! `${<name>.<field>.<index>}` to read a saved reply;
 //! `{"usage": {"uncached_in", "cached_in", "out"}}`; `{"sleep_ms": n}`;
-//! `{"exit": code}`.
+//! `{"stderr": "text"}` writes text as the CLI's stderr; `{"exit": code}`.
 
 use dvb_core::Effort;
 use dvb_core::event::ServedModel;
@@ -33,6 +33,7 @@ enum Step {
         out: u64,
     },
     SleepMs(u64),
+    Stderr(String),
     Exit(i32),
 }
 
@@ -51,6 +52,8 @@ pub struct Fake {
     pub script: PathBuf,
     /// The binary whose `run` verbs the script calls (`dvb`).
     pub dvb: PathBuf,
+    /// Where the script's `stderr` steps go.
+    pub stderr: crate::stream::StderrTail,
 }
 
 impl Provider for Fake {
@@ -74,6 +77,7 @@ impl Provider for Fake {
         Ok(Box::new(FakeSession {
             ws: ws.to_owned(),
             dvb: self.dvb.clone(),
+            stderr: self.stderr.clone(),
             queue,
             saved: BTreeMap::new(),
             ended: false,
@@ -89,6 +93,7 @@ enum Pending {
 struct FakeSession {
     ws: PathBuf,
     dvb: PathBuf,
+    stderr: crate::stream::StderrTail,
     queue: VecDeque<Pending>,
     saved: BTreeMap<String, Value>,
     ended: bool,
@@ -143,6 +148,11 @@ impl FakeSession {
             Step::SleepMs(ms) => {
                 std::thread::sleep(std::time::Duration::from_millis(ms));
                 RunItem::Text(format!("slept {ms} ms"))
+            }
+            Step::Stderr(text) => {
+                eprintln!("{text}");
+                self.stderr.push(&text);
+                RunItem::Text("wrote to stderr".into())
             }
             Step::Exit(code) => RunItem::Ended(ExitStatus { code: Some(code) }),
         }
@@ -228,6 +238,7 @@ mod tests {
         let fake = Fake {
             script: path,
             dvb: PathBuf::from("/bin/false"),
+            stderr: crate::stream::StderrTail::default(),
         };
         let s = fake
             .start(dir.path(), dir.path(), "", "fake-1", Effort::Medium)
@@ -276,10 +287,29 @@ mod tests {
     }
 
     #[test]
+    fn a_stderr_step_is_the_sessions_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("script.json");
+        std::fs::write(&path, r#"[{"stderr": "disk full\nretrying"}, {"exit": 1}]"#).unwrap();
+        let stderr = crate::stream::StderrTail::default();
+        let fake = Fake {
+            script: path,
+            dvb: PathBuf::from("/bin/false"),
+            stderr: stderr.clone(),
+        };
+        let mut s = fake
+            .start(dir.path(), dir.path(), "", "fake-1", Effort::Medium)
+            .unwrap();
+        while s.next().is_some() {}
+        assert_eq!(stderr.text(), "disk full\nretrying");
+    }
+
+    #[test]
     fn saved_replies_fill_later_bodies() {
         let mut f = FakeSession {
             ws: PathBuf::new(),
             dvb: PathBuf::new(),
+            stderr: crate::stream::StderrTail::default(),
             queue: VecDeque::new(),
             saved: BTreeMap::new(),
             ended: false,

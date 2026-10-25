@@ -1718,6 +1718,12 @@ export interface components {
             detail?: string | null;
             reason: components['schemas']['EndReason'];
             run: components['schemas']['RunId'];
+            /**
+             * @description For a crashed run: the last lines its session's CLI wrote to
+             *     stderr, secret-scrubbed, at most 400 bytes. Absent otherwise
+             *     and in older events.
+             */
+            stderr?: string | null;
           };
         }
       | {

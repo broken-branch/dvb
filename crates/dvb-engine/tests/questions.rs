@@ -518,6 +518,7 @@ async fn a_completed_goal_waits_at_the_global_cap_and_recovers_once_after_restar
                 run: unrelated.run,
                 reason: EndReason::Completed,
                 detail: None,
+                stderr: None,
             },
             EventKind::GoalDropped {
                 goal: GoalId::new("other-goal"),
@@ -652,6 +653,7 @@ async fn an_approval_reply_stays_on_its_goal_after_task_admission_with_another_g
             run: unit.run,
             reason: EndReason::Completed,
             detail: None,
+            stderr: None,
         }])
     })
     .unwrap();
@@ -1109,6 +1111,7 @@ async fn a_written_plan_reply_replans_its_goal_and_leaves_the_other_plan_untouch
         let fake = dvb_run::fake::Fake {
             script,
             dvb: "unused-dvb".into(),
+            stderr: dvb_run::StderrTail::default(),
         };
         let mut session = fake
             .start(&dir, &dir, &text, "fake-1", dvb_core::Effort::Medium)
@@ -2041,6 +2044,7 @@ fn pending_reply(e: &AppState, p: &ProjectId, late_empty_end: bool) {
             run: a.run,
             reason: EndReason::Completed,
             detail: None,
+            stderr: None,
         }])
     })
     .unwrap();
@@ -2064,6 +2068,7 @@ fn pending_reply(e: &AppState, p: &ProjectId, late_empty_end: bool) {
                 run: successor.run,
                 reason: EndReason::Completed,
                 detail: None,
+                stderr: None,
             }])
         })
         .unwrap();
@@ -2079,6 +2084,7 @@ fn fake_receives_prompt(e: &AppState, unit: &UnitId) -> String {
     let fake = dvb_run::fake::Fake {
         script,
         dvb: "unused-dvb".into(),
+        stderr: dvb_run::StderrTail::default(),
     };
     let mut session = fake
         .start(&dir, &dir, &text, "fake-1", dvb_core::Effort::Medium)
@@ -3467,6 +3473,7 @@ async fn stopped_task_recovery_wake_names_the_task_and_its_problem() {
                     run: builder.run.clone(),
                     reason: EndReason::Completed,
                     detail: None,
+                    stderr: None,
                 },
                 EventKind::TaskStateChanged {
                     task: task.clone(),
@@ -3628,6 +3635,7 @@ async fn an_answer_on_one_goal_is_acted_on_while_another_goal_has_a_pending_reco
                         run: asker.run.clone(),
                         reason: EndReason::Completed,
                         detail: None,
+                        stderr: None,
                     }])
                 })
                 .unwrap();
@@ -3653,6 +3661,7 @@ async fn an_answer_on_one_goal_is_acted_on_while_another_goal_has_a_pending_reco
                     run: builder.run.clone(),
                     reason: EndReason::Completed,
                     detail: None,
+                    stderr: None,
                 },
                 EventKind::TaskStateChanged {
                     task: ty.clone(),

@@ -146,6 +146,7 @@ mod tests {
                     run: RunId::new("r1"),
                     reason: expected,
                     detail: None,
+                    stderr: None,
                 }
             );
             assert_eq!(

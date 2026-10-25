@@ -158,10 +158,21 @@ async fn socket_a_failed_task_is_retried_in_its_kept_workspace_and_merges() {
     let out = Command::new(env!("CARGO_BIN_EXE_dvb"))
         .arg("--dev")
         .arg(&dir)
-        .args(["retry", task.as_str(), "CLI: use two plain text notes."])
+        .args([
+            "retry",
+            task.as_str(),
+            "CLI: use two plain text notes.",
+            "--json",
+        ])
         .output()
         .unwrap();
     assert!(out.status.success(), "{out:?}");
+    // --json prints the retried task as status lists it: no longer failed.
+    let retried: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(retried["task"]["id"], task.as_str(), "{retried}");
+    assert_eq!(retried["task"]["goal"], goal.id.as_str());
+    assert_eq!(retried["task"]["role_name"], "backend");
+    assert_ne!(retried["task"]["state"], "failed");
     // Read while the task runs: a done task's run directories are removed.
     let (cli_started, cli_prompt) = until("the CLI retry's builder", async || {
         builder_prompt(&c, &dir, &task, api_failure).await

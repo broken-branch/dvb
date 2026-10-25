@@ -108,7 +108,13 @@ pub enum Command {
     RepairBranch(RunAssignment),
     UnitActive,
     HeadWritten,
-    UnitEnded(EndReason),
+    /// With a crashed run's `run.ended` detail and stderr, which a failure
+    /// after the last attempt names.
+    UnitEnded {
+        reason: EndReason,
+        detail: Option<String>,
+        stderr: Option<String>,
+    },
     Published,
     PrOpened,
     /// The builder collected its recorded base tree: nothing to publish.
@@ -165,7 +171,7 @@ impl Command {
             | Command::RepairBranch(a)
             | Command::Resume(Some(a))
             | Command::Retry(Some(a)) => a.reviews.is_some(),
-            Command::UnitEnded(_) | Command::Reconcile(_) => needs_reviewer,
+            Command::UnitEnded { .. } | Command::Reconcile(_) => needs_reviewer,
             Command::UnitActive
             | Command::HeadWritten
             | Command::Published
@@ -194,7 +200,7 @@ impl Command {
             | Command::RepairBranch(_)
             | Command::UnitActive
             | Command::HeadWritten
-            | Command::UnitEnded(_)
+            | Command::UnitEnded { .. }
             | Command::Published
             | Command::PrOpened
             | Command::NoChanges
@@ -377,15 +383,37 @@ pub fn decide(state: &TaskState, cmd: Command, ctx: &Context) -> Result<Vec<Even
             | S::Cancelled
             | S::Failed { .. } => Ok(vec![]),
         },
-        Command::UnitEnded(reason) => match state {
-            S::Preparing | S::Running | S::Collecting => Ok(builder_ended(state, &reason, ctx)),
+        Command::UnitEnded {
+            reason,
+            detail,
+            stderr,
+        } => match state {
+            S::Preparing | S::Running | S::Collecting => Ok(builder_ended(
+                state,
+                &reason,
+                (detail.as_deref(), stderr.as_deref()),
+                ctx,
+            )),
             // The reviewer's unit ended without a verdict (a verdict moves the task).
-            S::InReview => Ok(reviewer_ended(state, &reason, ctx)),
+            S::InReview => Ok(reviewer_ended(
+                state,
+                &reason,
+                (detail.as_deref(), stderr.as_deref()),
+                ctx,
+            )),
             // A confirmed unit end settles uncertainty with its actual reason,
             // including driver/preflight failures and collected work, and is
             // recorded as the check (`engine.reconciled`) with the state it settled.
             S::Unknown { last } => {
-                let mut events = decide(last, Command::UnitEnded(reason), ctx)?;
+                let mut events = decide(
+                    last,
+                    Command::UnitEnded {
+                        reason,
+                        detail,
+                        stderr,
+                    },
+                    ctx,
+                )?;
                 if events.is_empty() {
                     events.push(moved(ctx, state, (**last).clone()));
                 }
@@ -973,7 +1001,12 @@ fn checks(
 /// A builder run ended: collected work publishes; a transient end retries
 /// within the attempts cap; a stop from outside stops the task; anything else
 /// fails it.
-fn builder_ended(state: &TaskState, reason: &EndReason, ctx: &Context) -> Vec<EventKind> {
+fn builder_ended(
+    state: &TaskState,
+    reason: &EndReason,
+    words: EndWords<'_>,
+    ctx: &Context,
+) -> Vec<EventKind> {
     match reason {
         EndReason::Completed if *state == TaskState::Collecting => {
             vec![moved(ctx, state, TaskState::Publishing)]
@@ -981,7 +1014,7 @@ fn builder_ended(state: &TaskState, reason: &EndReason, ctx: &Context) -> Vec<Ev
         EndReason::Completed => failed(ctx, state, "the run ended without collecting its work"),
         EndReason::Stopped => stopped(ctx, state, state, Some("the run was stopped")),
         EndReason::Crashed | EndReason::Oom | EndReason::Interrupted | EndReason::TimeLimit => {
-            run_retry(ctx, state, reason, RunKind::Builder)
+            run_retry(ctx, state, reason, words, RunKind::Builder)
         }
         EndReason::Mismatch | EndReason::Preflight(_) | EndReason::ParseError => {
             failed(ctx, state, &format!("the run ended: {}", end_words(reason)))
@@ -992,14 +1025,19 @@ fn builder_ended(state: &TaskState, reason: &EndReason, ctx: &Context) -> Vec<Ev
 /// The head's reviewer ended without a verdict (the engine sends a reviewer's
 /// end only then): again, within the attempts cap (`ctx.caps.attempts` counts
 /// the reviewer runs on this head).
-fn reviewer_ended(state: &TaskState, reason: &EndReason, ctx: &Context) -> Vec<EventKind> {
+fn reviewer_ended(
+    state: &TaskState,
+    reason: &EndReason,
+    words: EndWords<'_>,
+    ctx: &Context,
+) -> Vec<EventKind> {
     match reason {
         EndReason::Stopped => stopped(ctx, state, state, Some("the review was stopped")),
         EndReason::Completed
         | EndReason::Crashed
         | EndReason::Oom
         | EndReason::Interrupted
-        | EndReason::TimeLimit => run_retry(ctx, state, reason, RunKind::Reviewer),
+        | EndReason::TimeLimit => run_retry(ctx, state, reason, words, RunKind::Reviewer),
         EndReason::Mismatch | EndReason::Preflight(_) | EndReason::ParseError => failed(
             ctx,
             state,
@@ -1008,14 +1046,28 @@ fn reviewer_ended(state: &TaskState, reason: &EndReason, ctx: &Context) -> Vec<E
     }
 }
 
+/// A run's `run.ended` detail and stderr.
+type EndWords<'a> = (Option<&'a str>, Option<&'a str>);
+
 /// Another run, after a backoff, while attempts are left; else the task fails.
-/// A time limit names the limit of the run's `kind` in the failure.
-fn run_retry(ctx: &Context, from: &TaskState, reason: &EndReason, kind: RunKind) -> Vec<EventKind> {
+/// The failure names the last run's detail and stderr, and a time limit the
+/// limit of the run's `kind`.
+fn run_retry(
+    ctx: &Context,
+    from: &TaskState,
+    reason: &EndReason,
+    (detail, stderr): EndWords<'_>,
+    kind: RunKind,
+) -> Vec<EventKind> {
     if ctx.caps.attempts >= caps::ATTEMPTS_PER_TASK {
-        let mut last = end_words(reason).to_owned();
+        let mut last = crate::wording::ended_words(reason, detail);
         if *reason == EndReason::TimeLimit {
             let minutes = caps::time_limit(kind).as_secs() / 60;
             last = format!("{last} ({minutes} min)");
+        }
+        if let Some(stderr) = stderr {
+            let lines: Vec<_> = stderr.lines().collect();
+            last = format!("{last}; its stderr ended: {}", lines.join(" | "));
         }
         return failed(
             ctx,
@@ -1314,9 +1366,13 @@ fn reconciled(
             (UnitState::Inactive | UnitState::Failed, Some(_)) => {
                 vec![moved(ctx, state, S::Publishing)]
             }
-            (UnitState::Inactive | UnitState::Failed, None) => {
-                run_retry(ctx, state, &EndReason::Interrupted, RunKind::Builder)
-            }
+            (UnitState::Inactive | UnitState::Failed, None) => run_retry(
+                ctx,
+                state,
+                &EndReason::Interrupted,
+                (None, None),
+                RunKind::Builder,
+            ),
         },
         // The reviewer ended while unseen: without its verdict, again.
         S::InReview => match seen.unit {
@@ -1325,9 +1381,13 @@ fn reconciled(
             UnitState::Inactive | UnitState::Failed if ctx.open_findings > 0 || ctx.more_review => {
                 vec![moved(ctx, state, S::InReview)]
             }
-            UnitState::Inactive | UnitState::Failed => {
-                run_retry(ctx, state, &EndReason::Interrupted, RunKind::Reviewer)
-            }
+            UnitState::Inactive | UnitState::Failed => run_retry(
+                ctx,
+                state,
+                &EndReason::Interrupted,
+                (None, None),
+                RunKind::Reviewer,
+            ),
         },
         S::Planned
         | S::Publishing

@@ -23,6 +23,8 @@ pub struct Run {
     pub ended: Option<EndReason>,
     /// The crashed run's exit code and cause (`run.ended`'s `detail`).
     pub ended_detail: Option<String>,
+    /// The crashed run's last stderr lines (`run.ended`'s `stderr`).
+    pub ended_stderr: Option<String>,
     /// For an orchestrator run: the goal version it started for, or the next
     /// goal it proposed. Its plan and question are for that version only.
     pub goal_version: Option<EventId>,
@@ -246,6 +248,7 @@ impl Projections {
                             started_at: e.at,
                             ended: None,
                             ended_detail: None,
+                            ended_stderr: None,
                             goal_version,
                             delivered_goal_version,
                             preflight_failed: None,
@@ -322,6 +325,7 @@ impl Projections {
                 run,
                 reason,
                 detail,
+                stderr,
             } => {
                 if !matches!(reason, EndReason::Completed | EndReason::Stopped) {
                     self.failed_runs.insert(run.clone());
@@ -354,6 +358,7 @@ impl Projections {
                 if let Some(r) = self.runs.get_mut(run) {
                     r.ended = Some(reason.clone());
                     r.ended_detail.clone_from(detail);
+                    r.ended_stderr.clone_from(stderr);
                 }
                 if let Some(r) = self.runs.get(run)
                     && let Some(g) = self.goals.values().find(|g| {

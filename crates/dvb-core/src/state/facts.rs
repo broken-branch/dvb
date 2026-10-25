@@ -439,7 +439,11 @@ mod tests {
         });
         assert!(facts.more_review(&reconcile, ReviewKind::Design));
         assert!(!facts.more_review(
-            &Command::UnitEnded(EndReason::Completed),
+            &Command::UnitEnded {
+                reason: EndReason::Completed,
+                detail: None,
+                stderr: None,
+            },
             ReviewKind::Design
         ));
         fold(

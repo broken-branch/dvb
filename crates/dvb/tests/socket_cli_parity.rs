@@ -623,8 +623,13 @@ async fn socket_each_app_verb_matches_its_api_route() {
     let diff: DiffView =
         serde_json::from_slice(&dvb(&dir, &["task", "diff", "t", "--json"]).stdout).unwrap();
     assert_eq!(diff, d);
-    let verdict: VerdictView =
+    let printed: serde_json::Value =
         serde_json::from_slice(&dvb(&dir, &["task", "verdict", "t", "--json"]).stdout).unwrap();
+    // Beside the API's object, the reviewer role's slug.
+    let reviewer = roles(&c, &p).await;
+    let reviewer = reviewer.iter().find(|r| r.id == v.role).unwrap();
+    assert_eq!(printed["role_name"], reviewer.slug.as_str());
+    let verdict: VerdictView = serde_json::from_value(printed).unwrap();
     assert_eq!(verdict, v);
     assert!(verdict.open_findings > 0 && !verdict.findings.is_empty());
 

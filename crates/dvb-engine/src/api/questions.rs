@@ -96,11 +96,7 @@ pub(crate) fn answer_as(
             .into());
         }
         if !q.view.open {
-            return Err(Refusal::new(
-                RefusalCode::AlreadyTerminal,
-                "this question is already answered",
-            )
-            .into());
+            return Err(already_answered(proj, q).into());
         }
         if let dvb_core::event::QuestionKind::Completion { task, run, result } = &q.kind {
             let current = proj
@@ -233,4 +229,84 @@ pub(crate) fn answer_as(
     }
     let view = e.proj().questions.get(&id).map(|q| q.view.clone());
     view.ok_or_else(|| Fail::internal("question vanished"))
+}
+
+/// A resumed plan is asked again under a new id, so its old question's
+/// refusal names the open one.
+fn already_answered(proj: &crate::proj::Projections, q: &crate::proj::Question) -> Refusal {
+    let again = proj
+        .questions
+        .values()
+        .find(|o| q.plan_question && o.plan_question && o.view.open && o.lapses_on == q.lapses_on);
+    let detail = match again {
+        Some(o) => format!(
+            "this question is already answered; the plan is asked again in question {}",
+            o.view.id
+        ),
+        None => "this question is already answered".into(),
+    };
+    Refusal::new(RefusalCode::AlreadyTerminal, detail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::events;
+    use crate::{Config, Engine};
+    use dvb_core::event::{QuestionFormat, QuestionKind, QuestionOption};
+    use dvb_core::{GoalId, ProjectId, TaskId};
+
+    #[tokio::test]
+    async fn answering_a_resumed_plan_s_old_question_names_the_new_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = Engine::open(Config::dev(dir.path(), "dvb".into()), Default::default()).unwrap();
+        let (p, g) = (ProjectId::new("p"), GoalId::new("g"));
+        let stated = e
+            .append_checked(Some(&p), Actor::Engine, |_, _| {
+                Ok(vec![
+                    events::project_event(&p, "p", "/nowhere"),
+                    events::goal_event(&g, "Work", None),
+                    events::backend_plan_event(&g, &TaskId::new("t")),
+                ])
+            })
+            .unwrap()[1]
+            .id;
+        let option = |id, text: &str, approves_plan| QuestionOption {
+            id,
+            text: text.into(),
+            effect: String::new(),
+            approves_plan,
+            no_effect: false,
+            retries_task: None,
+        };
+        e.append_checked(Some(&p), Actor::Engine, |_, _| {
+            Ok(vec![EventKind::QuestionOpened {
+                kind: Some(QuestionKind::Ordinary),
+                main_ci: None,
+                task: None,
+                question: QuestionId::new("q"),
+                subject: "Approve the plan?".into(),
+                format: QuestionFormat::Simple,
+                options: vec![option(1, "Approve", true), option(2, "Not yet", false)],
+                recommended: 1,
+                lapses_on: LapsesOn::GoalVersion(stated),
+            }])
+        })
+        .unwrap();
+        let old = QuestionId::new("q");
+        answer_as(&e, &old, Answer::Choice(2), Actor::Owner).unwrap();
+        let refused = |e: &AppState| match answer_as(e, &old, Answer::Choice(1), Actor::Owner) {
+            Err(Fail::Refused(r)) if r.code == RefusalCode::AlreadyTerminal => r.detail,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(refused(&e), "this question is already answered");
+        let again = crate::owner::resume_plan(&e, &g).unwrap();
+        assert_eq!(
+            refused(&e),
+            format!(
+                "this question is already answered; the plan is asked again in question {}",
+                again.id
+            )
+        );
+    }
 }

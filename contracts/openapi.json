@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.1.66"
+    "version": "0.1.67"
   },
   "paths": {
     "/events": {
@@ -6602,6 +6602,13 @@
                   },
                   "run": {
                     "$ref": "#/components/schemas/RunId"
+                  },
+                  "stderr": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "For a crashed run: the last lines its session's CLI wrote to\nstderr, secret-scrubbed, at most 400 bytes. Absent otherwise\nand in older events."
                   }
                 }
               }

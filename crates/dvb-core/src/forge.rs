@@ -305,8 +305,10 @@ pub trait Forge: Send + Sync {
     async fn edit_pr_body(&self, repo: &Repo, pr: u64, body: &str) -> Result<(), ForgeError>;
     /// Check runs and commit statuses on `head`, from both APIs.
     async fn checks(&self, repo: &Repo, head: &str) -> Result<Vec<CheckObservation>, ForgeError>;
-    /// Latest completed Actions workflow jobs on the default branch, by name.
-    /// Links identify the workflow run, including when the branch has moved.
+    /// Latest completed Actions workflow jobs on the default branch's head
+    /// commit, by name, from push and pull_request runs only; empty when that
+    /// commit has none (main's state is unknown, not failing). Links identify
+    /// the workflow run.
     async fn main_checks(
         &self,
         repo: &Repo,

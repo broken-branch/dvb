@@ -247,13 +247,12 @@ pub async fn three_tasks_at_the_cap() -> (tempfile::TempDir, AppState, [TaskId; 
 }
 
 pub async fn started(e: &AppState, task: &TaskId) -> RunId {
-    for _ in 0..200 {
-        if let Some(run) = e.proj().tasks[task].facts.run.clone() {
-            return run;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-    panic!("{task} did not start");
+    super::wait::FAST
+        .until(&format!("{task} starts"), || {
+            e.proj().tasks[task].facts.run.is_some()
+        })
+        .await;
+    e.proj().tasks[task].facts.run.clone().unwrap()
 }
 
 /// Ends every run of `three_tasks_at_the_cap`: its two tasks' and the

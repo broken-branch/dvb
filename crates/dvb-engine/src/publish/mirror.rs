@@ -1,4 +1,5 @@
 //! Mirror snapshots on startup and authoritative changes, with periodic repair. GitHub observations never enter projections.
+use super::without_run_ids;
 use crate::{AppState, Fail};
 use dvb_core::api::GoalState;
 use dvb_core::forge::{BoardState, ForgeError, GoalMirror, Repo, TaskMirror, Visibility};
@@ -263,7 +264,7 @@ fn snapshot(e: &AppState, affected: Option<&BTreeSet<ProjectId>>) -> Vec<GoalSna
                             t.view.id.clone(),
                             TaskMirror {
                                 key: t.view.id.to_string(),
-                                title: t.view.title.clone(),
+                                title: without_run_ids(&t.view.title).into_owned(),
                                 role,
                                 model,
                                 state: board_state(&t.view.state),
@@ -281,14 +282,10 @@ fn snapshot(e: &AppState, affected: Option<&BTreeSet<ProjectId>>) -> Vec<GoalSna
                     g.project.clone(),
                     g.id.clone(),
                     Repo(project.view.repo.clone()),
-                    g.text.clone(),
+                    without_run_ids(&g.text).into_owned(),
                     GoalMirror {
                         key: g.id.to_string(),
-                        title: g
-                            .text
-                            .lines()
-                            .next()
-                            .unwrap_or("Goal")
+                        title: without_run_ids(g.text.lines().next().unwrap_or("Goal"))
                             .chars()
                             .take(200)
                             .collect(),

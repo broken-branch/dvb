@@ -2,9 +2,9 @@
 //! prior-value context for owner changes in the watch feed.
 use crate::client::WatchEvent;
 use crate::{CliError, Client, Event};
-use dvb_core::EventKind;
 use dvb_core::api::{ProjectView, RoleFields, RoleHistory};
 use dvb_core::roles::RoleRecord;
+use dvb_core::{EventKind, RoleId};
 use std::cell::{Cell, RefCell};
 use std::ops::ControlFlow;
 
@@ -144,9 +144,12 @@ pub async fn follow(
                             return Ok(true);
                         }
                         if json {
-                            serde_json::to_value(&*event)
-                                .map_err(crate::client::message)
-                                .map(|raw| json_line(raw, crate::feed_word(&event.kind)))
+                            match serde_json::to_value(&*event).map_err(crate::client::message) {
+                                Ok(raw) => feed_text(client, &event)
+                                    .await
+                                    .map(|text| json_line(raw, text)),
+                                Err(error) => Err(error),
+                            }
                         } else {
                             line(client, &event).await
                         }
@@ -189,7 +192,42 @@ pub fn json_line(mut event: serde_json::Value, text: Option<String>) -> String {
     event.to_string()
 }
 
+/// The role an event's wording names by its id.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "only these kinds' wording names a role"
+)]
+fn named_role(kind: &EventKind) -> Option<&RoleId> {
+    match kind {
+        EventKind::HireAdded(hire)
+        | EventKind::HireRetired(hire)
+        | EventKind::HireChanged { hire, .. } => Some(&hire.role),
+        EventKind::RunStarted(a) => Some(&a.role),
+        EventKind::RunRerouted { role, .. } => Some(role),
+        EventKind::DecisionRecorded { by, .. } => Some(by),
+        _ => None,
+    }
+}
+
+/// The feed's wording for an event, with the role it names by id followed by
+/// the role's slug, as `dvb status --json` gives `role_name`.
+async fn feed_text(client: &Client, event: &Event) -> Result<Option<String>, CliError> {
+    let text = crate::feed_word(&event.kind);
+    let (Some(text), Some(role), Some(project)) = (&text, named_role(&event.kind), &event.project)
+    else {
+        return Ok(text);
+    };
+    let roles: Vec<RoleRecord> = client.get(&format!("/projects/{project}/roles")).await?;
+    Ok(Some(match crate::role_name(&roles, role) {
+        Some(name) if name != role.as_str() => {
+            text.replacen(role.as_str(), &format!("{role} ({name})"), 1)
+        }
+        Some(_) | None => text.clone(),
+    }))
+}
+
 pub async fn line(client: &Client, event: &Event) -> Result<String, CliError> {
+    let text = feed_text(client, event).await?;
     let Some(project) = event.project.as_ref().filter(|_| {
         matches!(
             event.kind,
@@ -203,14 +241,10 @@ pub async fn line(client: &Client, event: &Event) -> Result<String, CliError> {
                 | EventKind::SettingsChanged { .. }
         )
     }) else {
-        return Ok(crate::line(event));
+        return Ok(crate::event_line(event, text));
     };
     let project: ProjectView = client.get(&format!("/projects/{project}")).await?;
-    let mut text = format!(
-        "{} ({})",
-        crate::feed_word(&event.kind).unwrap_or_default(),
-        project.name
-    );
+    let mut text = format!("{} ({})", text.unwrap_or_default(), project.name);
     if let EventKind::RoleChanged { role, .. } = &event.kind {
         let history: RoleHistory = client.get(&format!("/roles/{}/history", role.id)).await?;
         let previous = history
@@ -420,12 +454,15 @@ mod tests {
             "id":"project-id", "name":"example", "repo":"local",
             "default_branch":"main", "ci":"no_ci", "paused":false
         });
+        let roles = serde_json::to_value(default_records(|r| RoleId::new(r.slug))).unwrap();
+        let count =
+            1 + usize::from(history.is_some()) + usize::from(named_role(&event.kind).is_some());
         let server = tokio::spawn(async move {
-            let count = 1 + usize::from(history.is_some());
             for _ in 0..count {
                 let (request, response) = requests.recv().await.unwrap();
                 let body = match request.uri().path() {
                     "/projects/project-id" => project.clone(),
+                    "/projects/project-id/roles" => roles.clone(),
                     "/roles/code-reviewer/history" => history.clone().unwrap(),
                     path => panic!("unexpected path: {path}"),
                 };
@@ -493,6 +530,88 @@ mod tests {
                 "{text}"
             );
             assert!(!text.contains("private brief"));
+        }
+    }
+
+    #[tokio::test]
+    async fn run_hire_and_decision_lines_follow_the_role_id_with_its_slug() {
+        let role = RoleId::new("01M2ROLE");
+        let assignment = json!({
+            "run": "r", "task": "t", "role": role, "hire": "h", "model": "fake-1",
+            "vendor": "fake", "effort": "medium", "reason": "Planned.", "reviews": null
+        });
+        let hire = HireRecord {
+            id: HireId::new("hire"),
+            role: role.clone(),
+            model: "fake-1".into(),
+            effort: Effort::Medium,
+            status: HireStatus::Active,
+            routine: false,
+        };
+        for (kind, said) in [
+            (
+                EventKind::RunStarted(serde_json::from_value(assignment).unwrap()),
+                "01M2ROLE (backend) started t",
+            ),
+            (
+                EventKind::RunRerouted {
+                    run: dvb_core::RunId::new("r"),
+                    task: None,
+                    role: role.clone(),
+                    from_model: "codex-1".into(),
+                    to_model: "fake-1".into(),
+                    vendor: dvb_core::Vendor::Fake,
+                    effort: Effort::Medium,
+                    limited: None,
+                    resets_at: None,
+                },
+                "Only models: 01M2ROLE (backend) hired for codex-1, runs on fake-1",
+            ),
+            (
+                EventKind::DecisionRecorded {
+                    by: role.clone(),
+                    title: "Use a map".into(),
+                    options: None,
+                    swot: None,
+                    choice: "map".into(),
+                    reason: "Simple".into(),
+                },
+                "01M2ROLE (backend) decided: Use a map",
+            ),
+            (
+                EventKind::HireAdded(hire),
+                "01M2ROLE (backend): fake-1 hired (example)",
+            ),
+        ] {
+            let ev = event(kind);
+            let dir = tempfile::tempdir().unwrap();
+            let sock = dir.path().join("engine.sock");
+            let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+            let mut requests = test_http::requests(listener);
+            let mut roles = default_records(|r| RoleId::new(r.slug));
+            roles[3].id = role.clone();
+            let roles = serde_json::to_value(roles).unwrap();
+            let server = tokio::spawn(async move {
+                loop {
+                    let (request, response) = requests.recv().await.unwrap();
+                    let body = match request.uri().path() {
+                        "/projects/project-id/roles" => roles.clone(),
+                        "/projects/project-id" => json!({
+                            "id":"project-id", "name":"example", "repo":"local",
+                            "default_branch":"main", "ci":"no_ci", "paused":false
+                        }),
+                        path => panic!("unexpected path: {path}"),
+                    };
+                    response.send(test_http::json(200, body)).unwrap();
+                }
+            });
+            let client = Client::new(sock);
+            let text = line(&client, &ev).await.unwrap();
+            assert!(text.ends_with(said), "{text}");
+            // `--json` gives the same wording as `text`, without the project.
+            let json_text = feed_text(&client, &ev).await.unwrap().unwrap();
+            assert!(said.starts_with(&json_text), "{json_text}");
+            server.abort();
         }
     }
 

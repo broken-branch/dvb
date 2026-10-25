@@ -54,12 +54,11 @@ pub const COLLECTED_BUNDLE: &str = "collected.bundle";
 /// The most of a run's bundle the engine copies.
 const BUNDLE_MAX: u64 = 1 << 30;
 
-/// How long each git command fetching a run's bundle or checking its objects
-/// may take: the task's lock is held meanwhile.
+/// How long fetching a run's bundle may take: the task's lock is held
+/// meanwhile.
 const FETCH_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
 
-/// The most memory git allocates at once while fetching or checking a run's
-/// bundle, so a small pack cannot inflate an object without bound.
+/// The most memory git allocates at once while fetching a run's bundle, so a small pack cannot inflate an object without bound.
 const OBJECT_MAX: &str = "512m";
 
 /// What a missing bundle means: the run's dvb-run wrote none.
@@ -104,7 +103,7 @@ pub async fn fetch_collected(
 }
 
 /// Readies the mirrors at engine start, before any fetch: removes the bundle
-/// copies and checks a crash left (`.collected.*`, up to the bundle limit
+/// copies a crash left (`.collected.*`, up to the bundle limit
 /// each).
 pub fn clean_mirrors(mirrors: &Path) -> std::io::Result<()> {
     let entries = match std::fs::read_dir(mirrors) {
@@ -177,22 +176,26 @@ async fn fetch_bundle(mirror: &Path, path: &Path, run_ref: &str) -> Result<Strin
     .await
     .map_err(|joined| joined.to_string())?
     .map_err(io)?;
-    limited(
-        mirror,
-        &[
-            // A git from 2.46 refuses malformed objects here already.
-            "-c",
-            "fetch.fsckObjects=true",
-            "fetch",
-            "--quiet",
-            "--no-tags",
-            &copy.path().to_string_lossy(),
-            &format!("+refs/dvb/collected:{run_ref}"),
-        ],
-        Stdio::null(),
-    )
-    .await?;
-    check_objects(mirror, run_ref).await?;
+    // At most two threads and `OBJECT_MAX`; nothing the fetch lacks is
+    // fetched from anywhere else. A git from 2.46 refuses malformed objects.
+    Git::new(mirror)
+        .run_within(
+            FETCH_LIMIT,
+            &[
+                "-c",
+                "pack.threads=2",
+                "-c",
+                "fetch.fsckObjects=true",
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                &copy.path().to_string_lossy(),
+                &format!("+refs/dvb/collected:{run_ref}"),
+            ],
+            &[("GIT_NO_LAZY_FETCH", "1"), ("GIT_ALLOC_LIMIT", OBJECT_MAX)],
+            Stdio::null(),
+        )
+        .await?;
     Git::new(mirror)
         .run(
             &["rev-parse", "--verify", &format!("{run_ref}^{{commit}}")],
@@ -200,76 +203,6 @@ async fn fetch_bundle(mirror: &Path, path: &Path, run_ref: &str) -> Result<Strin
         )
         .await
         .map_err(Into::into)
-}
-
-/// Checks the objects `run_ref` brought into the mirror, those no other ref
-/// reaches, as strictly as a fetch with `fetch.fsckObjects` does, whatever the
-/// git: they are packed and the pack indexed with `--strict`. Malformed trees
-/// or .gitmodules are refused, and the caller drops the run ref.
-async fn check_objects(mirror: &Path, run_ref: &str) -> Result<(), InternalError> {
-    let objects = limited(
-        mirror,
-        &[
-            "rev-list",
-            "--objects",
-            "--no-object-names",
-            run_ref,
-            "--not",
-            // Another run's ref may be one still being checked.
-            "--exclude=refs/dvb/runs/*",
-            "--all",
-        ],
-        Stdio::null(),
-    )
-    .await?;
-    if objects.is_empty() {
-        return Ok(());
-    }
-    let check = tempfile::Builder::new()
-        .prefix(".collected.")
-        .tempdir_in(mirror)
-        .map_err(|source| InternalError::Io {
-            context: mirror.display().to_string(),
-            source,
-        })?;
-    let io = |source| InternalError::Io {
-        context: check.path().display().to_string(),
-        source,
-    };
-    let list = check.path().join("objects");
-    std::fs::write(&list, format!("{objects}\n")).map_err(io)?;
-    let list = std::fs::File::open(list).map_err(io)?;
-    let pack = check.path().join("check");
-    let name = limited(
-        mirror,
-        &["pack-objects", "--quiet", &pack.to_string_lossy()],
-        list.into(),
-    )
-    .await?;
-    limited(
-        mirror,
-        &[
-            "index-pack",
-            "--strict",
-            "-o",
-            &check.path().join("strict.idx").to_string_lossy(),
-            &format!("{}-{name}.pack", pack.display()),
-        ],
-        Stdio::null(),
-    )
-    .await?;
-    Ok(())
-}
-
-/// One git command of a run's fetch in `mirror`, with at most two threads,
-/// `OBJECT_MAX` and `FETCH_LIMIT`.
-async fn limited(mirror: &Path, args: &[&str], stdin: Stdio) -> Result<String, GitError> {
-    let args = [&["-c", "pack.threads=2"], args].concat();
-    // Nothing the fetch lacks is fetched from anywhere else.
-    let env = [("GIT_NO_LAZY_FETCH", "1"), ("GIT_ALLOC_LIMIT", OBJECT_MAX)];
-    Git::new(mirror)
-        .run_within(FETCH_LIMIT, &args, &env, stdin)
-        .await
 }
 
 /// Fetches the collected snapshot the run in `dir` bundled into the mirror and
@@ -462,7 +395,7 @@ pub async fn patch_id(mirror: &Path, from: &str, to: &str) -> Result<String, Int
 pub mod mirror;
 pub mod project;
 pub mod reconcile;
-pub use dvb_forge::scan::{Hit, ScanPolicy};
+pub use dvb_forge::scan::{Hit, ScanPolicy, without_run_ids};
 
 /// Installation settings stay local; no identity values go into a publication
 /// unless the owner chose to publish as themself (`as_owner`).
@@ -647,7 +580,7 @@ fn diff_path(header: &str) -> Result<String, InternalError> {
     Ok(decoded.strip_prefix("b/").unwrap_or(&decoded).to_owned())
 }
 
-/// Scans the lines a commit adds against its parent, with the secret and path
+/// Scans the lines a commit adds against its parent, with the secret
 /// rules: the owner's name and email are checked only in what dvb writes itself
 /// (commit identity and message, PR title and body, comments).
 pub async fn scan_commit(
@@ -1240,8 +1173,24 @@ mod tests {
             .unwrap()
     }
 
+    /// Whether this git applies `fetch.fsckObjects` to a fetch from a bundle,
+    /// which it does from 2.46.
+    async fn fetch_fscks_bundles(dir: &Path) -> bool {
+        let version = Git::new(dir).run(&["version"], &[]).await.unwrap();
+        let mut parts = version
+            .trim_start_matches("git version ")
+            .split('.')
+            .map(|part| part.parse::<u32>().unwrap_or(0));
+        (parts.next().unwrap_or(0), parts.next().unwrap_or(0)) >= (2, 46)
+    }
+
     #[tokio::test]
-    async fn a_snapshot_failing_fsck_is_refused_and_leaves_no_run_ref() {
+    async fn a_snapshot_failing_fsck_is_refused_at_fetch_and_leaves_no_run_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        if !fetch_fscks_bundles(tmp.path()).await {
+            eprintln!("skipped: git before 2.46 does not fsck a fetch from a bundle");
+            return;
+        }
         for (name, message, content) in MALFORMED {
             let tmp = tempfile::tempdir().unwrap();
             let d = tmp.path();
@@ -1249,49 +1198,14 @@ mod tests {
             let head = commit_with(&ws, name, content).await;
             bundle(&ws, &head).await;
             let err = fetch_collected(&mirror, d, "r1", &head).await.unwrap_err();
-            assert!(err.to_string().contains(message), "{err}");
+            let InternalError::Git(GitError::Failed { args, stderr, .. }) = err else {
+                panic!("expected fetch to refuse the snapshot: {err}");
+            };
+            assert!(args.contains("fetch.fsckObjects=true fetch"), "{args}");
+            let stderr = String::from_utf8_lossy(&stderr);
+            assert!(stderr.contains(message), "{stderr}");
             assert_eq!(run_refs(&mirror).await, "");
         }
-    }
-
-    /// The check after the fetch, which a git before 2.46 relies on: its
-    /// fetch from a bundle checks nothing.
-    #[tokio::test]
-    async fn the_objects_a_run_brought_are_checked_whatever_the_git() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (mirror, _, base) = mirror_and_ws(tmp.path()).await;
-        for (name, message, content) in MALFORMED {
-            let head = commit_with(&mirror, name, content).await;
-            for run_ref in ["refs/dvb/runs/r1", "refs/dvb/runs/r2"] {
-                Git::new(&mirror)
-                    .run(&["update-ref", run_ref, &head], &[])
-                    .await
-                    .unwrap();
-            }
-            // Another run's ref vouches for nothing.
-            let err = check_objects(&mirror, "refs/dvb/runs/r1")
-                .await
-                .unwrap_err();
-            assert!(err.to_string().contains(message), "{err}");
-        }
-        let head = commit_with(&mirror, "a.txt", b"fine\n").await;
-        Git::new(&mirror)
-            .run(&["update-ref", "refs/dvb/runs/r1", &head], &[])
-            .await
-            .unwrap();
-        check_objects(&mirror, "refs/dvb/runs/r1").await.unwrap();
-        // A run that brought no object has nothing to check.
-        Git::new(&mirror)
-            .run(&["update-ref", "refs/dvb/runs/r1", &base], &[])
-            .await
-            .unwrap();
-        check_objects(&mirror, "refs/dvb/runs/r1").await.unwrap();
-        let left: Vec<_> = std::fs::read_dir(&mirror)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .filter(|name| name.as_encoded_bytes().starts_with(b".collected."))
-            .collect();
-        assert!(left.is_empty(), "{left:?}");
     }
 
     #[tokio::test]
@@ -1570,11 +1484,7 @@ mod tests {
         // Allowing a token does not allow another rule on the same line.
         std::fs::write(
             ws.join("a.txt"),
-            format!(
-                "one\n{} /var/lib/dvb/work/{}\n",
-                token(),
-                "01M59VRF3PQDEY1AQYY29F3TS6"
-            ),
+            format!("one\n{} AKIA{}\n", token(), "A".repeat(16)),
         )
         .unwrap();
         Git::new(&ws)
@@ -1591,7 +1501,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .rule,
-            "run-work-dir"
+            "aws-access-key"
         );
     }
 

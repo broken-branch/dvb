@@ -331,6 +331,7 @@ async fn a_resume_after_a_stopped_queued_resume_carries_on_in_the_workspace() {
             run: RunId::new("b1"),
             reason: EndReason::Stopped,
             detail: None,
+            stderr: None,
         },
         moved(TaskState::Running, stopped(TaskState::Running)),
     ]);
@@ -378,6 +379,7 @@ fn stopped_with_workspace(dir: &Path, stub: &Arc<Stub>) -> (AppState, std::path:
             run: RunId::new("b1"),
             reason: EndReason::Stopped,
             detail: None,
+            stderr: None,
         },
         moved(TaskState::Running, stopped(TaskState::Running)),
     ]);
@@ -567,6 +569,95 @@ fn a_crashed_runs_cause_is_on_its_end_and_its_task_says_it_retries() {
         Some(
             "Work ended: crashed (exit 4: exec: the CLI exited 1); attempt 2 starts automatically"
         )
+    );
+}
+
+#[test]
+fn a_crashed_last_attempt_names_its_cause_and_scrubbed_stderr_on_its_end_and_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut kinds = Vec::new();
+    for n in 1..=3 {
+        let run = format!("b{n}");
+        kinds.extend([
+            EventKind::RunStarted(builder(&run, "x")),
+            EventKind::TaskStarted {
+                branch_repair: false,
+                retried: false,
+                task: TaskId::new(TASK),
+                run: RunId::new(&run),
+                resume: false,
+            },
+        ]);
+        if n < 3 {
+            kinds.push(EventKind::RunEnded {
+                run: RunId::new(&run),
+                reason: EndReason::Crashed,
+                detail: None,
+                stderr: None,
+            });
+        }
+    }
+    kinds.push(moved(TaskState::Planned, TaskState::Running));
+    let e = engine(dir.path(), &Arc::new(Stub::default()), kinds);
+    let run_dir = dir.path().join("work/b3");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    std::fs::write(
+        run_dir.join("cause"),
+        "exit 4: exec: the session exited with code 1",
+    )
+    .unwrap();
+    let token = format!("ghp_{}", "a".repeat(36));
+    let mut stderr: Vec<String> = (0..20)
+        .map(|n| format!("{n}: {}", "x".repeat(60)))
+        .collect();
+    stderr.extend([
+        format!("auth: {token}"),
+        String::new(),
+        "error: No space left on device (os error 28)".into(),
+    ]);
+    std::fs::write(run_dir.join("stderr"), stderr.join("\n")).unwrap();
+    e.end_run(&RunId::new("b3"), EndReason::Crashed, None)
+        .unwrap();
+    let ended = support::events::all(&e)
+        .into_iter()
+        .find_map(|ev| {
+            if let EventKind::RunEnded {
+                run,
+                detail,
+                stderr,
+                ..
+            } = ev.kind
+                && run.as_str() == "b3"
+            {
+                Some((detail, stderr))
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    // Whole lines from the end within 400 bytes; the blank line is dropped.
+    let mut tail = stderr[16..20].to_vec();
+    tail.extend([
+        "[line withheld by dvb's secret scan: github-token]".into(),
+        "error: No space left on device (os error 28)".into(),
+    ]);
+    assert_eq!(
+        ended,
+        (
+            Some("exit 4: exec: the session exited with code 1".to_owned()),
+            Some(tail.join("\n"))
+        )
+    );
+    assert!(tail.join("\n").len() <= 400 && stderr[15..].join("\n").len() > 400);
+    assert_eq!(
+        state(&e),
+        TaskState::Failed {
+            reason: format!(
+                "3 attempts; the last ended: crashed (exit 4: exec: the session exited with \
+                 code 1); its stderr ended: {}",
+                tail.join(" | ")
+            )
+        }
     );
 }
 
@@ -858,6 +949,7 @@ async fn the_start_up_check_keeps_a_stopped_tasks_run_and_drops_its_build_output
             run: RunId::new("b1"),
             reason: EndReason::Stopped,
             detail: None,
+            stderr: None,
         },
         moved(TaskState::Running, stopped(TaskState::Running)),
     ]);
@@ -898,6 +990,7 @@ async fn the_start_up_check_removes_the_directories_nothing_reads_again() {
             run: RunId::new("b1"),
             reason: EndReason::Completed,
             detail: None,
+            stderr: None,
         },
         moved(TaskState::Running, TaskState::Done),
         EventKind::RunStarted(orchestrator("o1")),
@@ -905,6 +998,7 @@ async fn the_start_up_check_removes_the_directories_nothing_reads_again() {
             run: RunId::new("o1"),
             reason: EndReason::Completed,
             detail: None,
+            stderr: None,
         },
         EventKind::RunStarted(orchestrator("o2")),
     ]);
@@ -958,6 +1052,7 @@ async fn a_task_done_or_dropped_loses_its_ended_runs_directories() {
             run: RunId::new("b1"),
             reason: EndReason::Completed,
             detail: None,
+            stderr: None,
         });
         let e = engine(dir.path(), &stub, more);
         let run_dir = dir.path().join("work/b1");
@@ -1012,6 +1107,7 @@ async fn a_failed_task_loses_its_runs_directories_when_its_goal_is_dropped() {
             run: RunId::new("b1"),
             reason: EndReason::Crashed,
             detail: None,
+            stderr: None,
         },
         moved(
             TaskState::Running,

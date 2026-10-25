@@ -1024,12 +1024,17 @@ impl Forge for GitHub {
         branch: &str,
     ) -> Result<Vec<CheckObservation>, ForgeError> {
         let api = self.client(repo).await?;
+        let commit: Value = api
+            .get(self.route(repo, &format!("/commits/{}", segment(branch)))?)
+            .await
+            .map_err(api_error)?;
+        let head = text(&commit, "sha")?;
         let runs = self
             .list(
                 &api,
                 &self.route(
                     repo,
-                    &format!("/actions/runs?branch={}&status=completed", segment(branch)),
+                    &format!("/actions/runs?head_sha={}&status=completed", segment(head)),
                 )?,
                 Some("workflow_runs"),
             )
@@ -1038,9 +1043,10 @@ impl Forge for GitHub {
         let mut names = BTreeSet::new();
         let mut checks = Vec::new();
         for run in runs {
-            if run["event"]
-                .as_str()
-                .is_some_and(|event| event.starts_with("pull_request"))
+            // Manual and scheduled runs, and runs on older commits, are not
+            // main's CI: without a run of main's own, its state is unknown.
+            if run["head_sha"] != head
+                || !matches!(run["event"].as_str(), Some("push" | "pull_request"))
             {
                 continue;
             }

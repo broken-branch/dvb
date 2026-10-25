@@ -3,6 +3,7 @@
 //! in engine memory.
 use regex::Regex;
 use serde::Deserialize;
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,7 +15,8 @@ pub struct Hit {
 
 /// The owner's name and email are rules only when set: the engine sets them for
 /// what dvb writes to GitHub itself (commit identity and message, PR title and
-/// body, comments). `ScanPolicy::default()`, the secret and path rules alone,
+/// body, milestone title and description, board (project) item title, role and
+/// model). `ScanPolicy::default()`, the secret rules alone,
 /// scans owner-typed config, commit content, issue text shown to runs and
 /// check log excerpts.
 #[derive(Clone, Default)]
@@ -54,6 +56,36 @@ fn rules() -> &'static [(String, Regex)] {
             })
             .collect()
     })
+}
+
+/// `text` with each run's work directory, `/var/lib/dvb/work/<ULID>`, written
+/// as `/var/lib/dvb/work/<run>`: a run id means nothing on GitHub, and a path
+/// in a PR is no reason to hold it back.
+#[expect(
+    clippy::expect_used,
+    reason = "A constant regex verified by the scan tests"
+)]
+pub fn without_run_ids(text: &str) -> Cow<'_, str> {
+    static RUN_DIR: OnceLock<Regex> = OnceLock::new();
+    RUN_DIR
+        .get_or_init(|| {
+            Regex::new(r"/var/lib/dvb/work/[0-9A-HJKMNP-TV-Z]{26}\b")
+                .expect("invalid run dir regex")
+        })
+        .replace_all(text, "/var/lib/dvb/work/<run>")
+}
+
+/// `text` with each line the secret scan matches replaced, never passed on:
+/// for text only the owner and the owner's runs read, so the owner's name and
+/// email stay.
+pub fn scrub(text: &str) -> String {
+    text.lines()
+        .map(|line| match ScanPolicy::default().scan("text", line) {
+            Some(hit) => format!("[line withheld by dvb's secret scan: {}]", hit.rule),
+            None => line.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 impl ScanPolicy {
@@ -96,20 +128,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn run_work_dir_paths_are_blocked() {
-        let policy = ScanPolicy::default();
+    fn run_work_dirs_pass_the_scan_and_lose_their_run_id() {
         let run = "01M59VRF3PQDEY1AQYY29F3TS6";
         for suffix in ["", "/ws/node_modules/.cache/file"] {
             let text = format!("cache:\n/var/lib/dvb/work/{run}{suffix}");
+            assert!(ScanPolicy::default().hits("outbound", &text).is_empty());
             assert_eq!(
-                policy.hits("outbound", &text),
-                [Hit {
-                    file: "outbound".into(),
-                    line: 2,
-                    rule: "run-work-dir".into(),
-                }]
+                without_run_ids(&text),
+                format!("cache:\n/var/lib/dvb/work/<run>{suffix}")
             );
         }
+        assert_eq!(
+            without_run_ids("/var/lib/dvb/work/%i"),
+            "/var/lib/dvb/work/%i"
+        );
     }
 
     #[test]

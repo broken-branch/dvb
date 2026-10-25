@@ -48,6 +48,7 @@ impl Observed {
                     let fake = dvb_run::fake::Fake {
                         script,
                         dvb: "dvb".into(),
+                        stderr: dvb_run::StderrTail::default(),
                     };
                     let mut session = fake
                         .start(&dir, &dir, &prompt, model, Effort::Medium)

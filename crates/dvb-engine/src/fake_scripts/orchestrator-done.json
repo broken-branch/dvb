@@ -1,7 +1,7 @@
 [
   {
     "run": ["ask", {
-      "subject": "Done: {{goal_text}}. What next?",
+      "subject": "What next? Done: {{goal_text}}",
       "options": [
         {"text": "Show the build version in the app's footer", "effect": "States it as the next goal."},
         {"text": "Nothing for now", "effect": "The team waits.", "no_effect": true}

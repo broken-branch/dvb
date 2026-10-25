@@ -41,6 +41,8 @@ pub struct Codex {
     /// not while another run of the project may still be installing it into
     /// their shared RUSTUP_HOME, which rustup does not guard.
     pub toolchain_installs: bool,
+    /// Where the session's app-server stderr goes.
+    pub stderr: crate::stream::StderrTail,
 }
 
 /// JSON-RPC over lines. Notifications that arrive while a response is awaited
@@ -280,7 +282,11 @@ impl Codex {
         if !self.toolchain_installs {
             cmd.env("RUSTUP_AUTO_INSTALL", "0");
         }
-        let (child, rpc) = connect(cmd)?;
+        cmd.stderr(Stdio::piped());
+        let (mut child, rpc) = connect(cmd)?;
+        if let Some(err) = child.stderr.take() {
+            self.stderr.tee(err);
+        }
         let (ws, prompt, model) = (ws.to_owned(), prompt.to_owned(), model.to_owned());
         let (child, mut session) = startup(child, timeout, move || {
             let mut session = CodexSession::over(rpc, &model);
@@ -1191,6 +1197,7 @@ mod tests {
                 bin: startup_stub(dir.path(), &replies[..answered], true),
                 run_dir: dir.path().to_owned(),
                 toolchain_installs: true,
+                stderr: crate::stream::StderrTail::default(),
             };
             let result = provider.start_with_timeout(
                 dir.path(),
@@ -1238,6 +1245,7 @@ mod tests {
             bin: startup_stub(dir.path(), &replies, false),
             run_dir: dir.path().to_owned(),
             toolchain_installs: true,
+            stderr: crate::stream::StderrTail::default(),
         };
         let mut session = provider
             .start_with_timeout(

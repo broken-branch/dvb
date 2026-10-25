@@ -301,6 +301,12 @@ async fn socket_status_json_has_the_counts_goals_tasks_questions_and_items() {
     assert_eq!(by_id(items, "q-goal")["command"], "dvb answer q-goal <n>");
     assert_eq!(by_id(items, "q-goal")["kind"], "question");
     assert_eq!(by_id(items, "q-goal")["project_name"], "p");
+    // The paused project is listed, though not counted.
+    assert_eq!(
+        by_id(items, "p"),
+        &json!({"kind": "project", "id": "p", "project": "p", "project_name": "p",
+                "title": "p", "command": "dvb resume p"})
+    );
 
     let scoped = json_of(dir, &["status", "p", "--json"]);
     assert_eq!(
@@ -355,6 +361,7 @@ async fn socket_refusals_and_unknown_names_exit_1_in_one_form() {
         (&["status", "nope", "--json"][..], "no project nope"),
         (&["goal", "nope", "Some", "work"], "no project nope"),
         (&["task", "verdict", "BOGUS", "--json"], ""),
+        (&["resume", "nope"], "(no task, goal or project nope)\n"),
     ] {
         let out = dvb(dir, args);
         assert_eq!(out.status.code(), Some(1), "{args:?}: {out:?}");
@@ -367,6 +374,43 @@ async fn socket_refusals_and_unknown_names_exit_1_in_one_form() {
     }
     let usage = dvb(dir, &["answer", "q-goal"]);
     assert_eq!(usage.status.code(), Some(2), "{usage:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn socket_stop_pause_and_resume_json_print_what_they_changed() {
+    let tmp = tempfile::Builder::new().prefix("dvbj").tempdir().unwrap();
+    let dir = tmp.path();
+    let (_e, _serving) = seeded(dir).await;
+    let task = |id: &str, state: &str, reason: Value| {
+        json!({"task": {
+            "id": id, "goal": "g", "state": state, "title": format!("Title {id}"),
+            "role": "r-backend", "role_name": "backend", "pr": null, "reason": reason,
+            "waiting_for": [],
+        }})
+    };
+
+    let stopped = json_of(
+        dir,
+        &["stop", "t-stop", "--reason", "not before Monday", "--json"],
+    );
+    assert_eq!(
+        stopped,
+        task("t-stop", "stopped", json!("not before Monday")),
+        "{stopped}"
+    );
+
+    let resumed = json_of(dir, &["resume", "p", "--json"]);
+    assert_eq!(resumed["project"]["id"], "p", "{resumed}");
+    assert_eq!(resumed["project"]["name"], "p");
+    assert_eq!(resumed["project"]["paused"], false);
+
+    let resumed = json_of(dir, &["resume", "t-stop", "--json"]);
+    assert_eq!(resumed["task"]["id"], "t-stop", "{resumed}");
+    assert_ne!(resumed["task"]["state"], "stopped");
+
+    let paused = json_of(dir, &["pause", "p", "--json"]);
+    assert_eq!(paused["project"]["id"], "p", "{paused}");
+    assert_eq!(paused["project"]["paused"], true);
 }
 
 #[tokio::test(flavor = "multi_thread")]

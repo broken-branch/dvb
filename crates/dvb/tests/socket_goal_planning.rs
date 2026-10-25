@@ -1260,6 +1260,18 @@ async fn socket_not_yet_parks_the_plan_and_resume_asks_the_same_question_again()
     assert_eq!(again.options, original.options);
     assert_eq!(again.recommended, original.recommended);
     assert_eq!(again.plan, original.plan);
+    // The answered question's id names the one asking again.
+    let stale = c
+        .post::<_, QuestionView>(
+            &format!("/questions/{}/answer", original.id),
+            &Answer::Choice(1),
+        )
+        .await;
+    assert!(
+        matches!(&stale, Err(CliError::Refused(r)) if r.code == RefusalCode::AlreadyTerminal
+            && r.detail.ends_with(&format!("the plan is asked again in question {}", again.id))),
+        "{stale:?}"
+    );
     passes(&e).await;
     assert_eq!(runs_for(&e, &goal.id).len(), 1);
     let goals: Vec<GoalView> = c.get("/goals?project=p").await.unwrap();
@@ -2153,6 +2165,7 @@ async fn socket_planner_question_waits_for_actual_answer_and_releases_replayed_h
                         run: assignment.run,
                         reason: EndReason::Completed,
                         detail: None,
+                        stderr: None,
                     },
                 ])
             })

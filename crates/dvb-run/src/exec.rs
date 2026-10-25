@@ -8,6 +8,7 @@ use crate::claude::{self, Claude};
 use crate::client;
 use crate::codex::Codex;
 use crate::fake::Fake;
+use crate::stream::StderrTail;
 use dvb_core::event::{OutputItem, ServedModel};
 use dvb_core::git::Git;
 use dvb_core::provider::{Provider, ProviderError, RunItem, Session};
@@ -390,9 +391,11 @@ async fn whole_run(env: &RunEnv, run: &str) -> RunOutcome {
         eprintln!("preflight refused: {:?}", body.checks);
         return RunOutcome::PreflightRefused;
     }
-    if let Err(failure) = session(env, toolchain_installs) {
+    let stderr = StderrTail::default();
+    if let Err(failure) = session(env, toolchain_installs, &stderr) {
         let outcome = outcome_for(&failure);
         write_reason(&env.dir, outcome);
+        write_stderr(&env.dir, &stderr.text());
         return failed(&env.dir, outcome, &format!("exec: {failure}"));
     }
     match collect(env).await {
@@ -415,6 +418,17 @@ fn failed(dir: &Path, outcome: RunOutcome, cause: &str) -> RunOutcome {
         eprintln!("cause: {e}");
     }
     outcome
+}
+
+/// Writes a failed session's last stderr lines as the run directory's
+/// `stderr`: the engine's `run.ended` carries them.
+fn write_stderr(dir: &Path, tail: &str) {
+    if tail.is_empty() {
+        return;
+    }
+    if let Err(e) = std::fs::write(dir.join("stderr"), tail) {
+        eprintln!("stderr: {e}");
+    }
 }
 
 /// Writes a failed session's `reason` for the engine.
@@ -645,7 +659,11 @@ impl From<ProviderError> for Failure {
     }
 }
 
-fn provider(env: &RunEnv, toolchain_installs: bool) -> Result<Box<dyn Provider>, String> {
+fn provider(
+    env: &RunEnv,
+    toolchain_installs: bool,
+    stderr: &StderrTail,
+) -> Result<Box<dyn Provider>, String> {
     let cli = || {
         crate::preflight::find_cli(env)
             .ok_or_else(|| format!("{} is not on PATH", env.vendor.as_str()))
@@ -657,23 +675,27 @@ fn provider(env: &RunEnv, toolchain_installs: bool) -> Result<Box<dyn Provider>,
                 .clone()
                 .ok_or("DVB_FAKE_SCRIPT is not set")?,
             dvb: std::env::current_exe().map_err(|e| e.to_string())?,
+            stderr: stderr.clone(),
         }),
         Vendor::Claude => Box::new(Claude {
             bin: cli()?,
             run_dir: env.dir.clone(),
             toolchain_installs,
+            stderr: stderr.clone(),
         }),
         Vendor::Codex => Box::new(Codex {
             bin: cli()?,
             run_dir: env.dir.clone(),
             toolchain_installs,
+            stderr: stderr.clone(),
         }),
     })
 }
 
-/// Plays the provider's session, reporting each item to the engine.
-fn session(env: &RunEnv, toolchain_installs: bool) -> Result<(), Failure> {
-    let provider = provider(env, toolchain_installs)?;
+/// Plays the provider's session, reporting each item to the engine. The CLI's
+/// stderr goes to `stderr`.
+fn session(env: &RunEnv, toolchain_installs: bool, stderr: &StderrTail) -> Result<(), Failure> {
+    let provider = provider(env, toolchain_installs, stderr)?;
     let prompt = env
         .prompt
         .as_ref()
@@ -765,7 +787,8 @@ fn report(env: &RunEnv, s: &mut dyn Session) -> Result<(), Failure> {
     }
     match ended {
         Some(Some(0)) | None => Ok(()),
-        Some(code) => Err(format!("the session ended with {code:?}").into()),
+        Some(Some(code)) => Err(format!("the session exited with code {code}").into()),
+        Some(None) => Err("a signal ended the session".to_owned().into()),
     }
 }
 
@@ -1136,6 +1159,44 @@ mod tests {
     }
 
     #[test]
+    fn a_crashed_session_says_its_exit_code_and_leaves_its_last_stderr_lines_scrubbed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_owned();
+        std::fs::create_dir_all(dir.join("ws")).unwrap();
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        let token = format!("sk-ant-{}", "a".repeat(30));
+        let stub = dir.join("claude");
+        crate::testutil::write_executable(
+            &stub,
+            &format!(
+                "#!/bin/sh\ncat >/dev/null\nfor n in 1 2 3 4 5 6 7; do echo \"line $n\" >&2; done\n\
+                 echo 'auth: {token}' >&2\nhead -c 3000 /dev/zero | tr '\\0' y >&2\necho >&2\n\
+                 printf '\\033[31mfatal: out of memory\\033[0m\\n' >&2\n\
+                 printf '%s\\n' '{{\"type\":\"result\",\"is_error\":false,\"result\":\"done\"}}'\n\
+                 exit 1\n"
+            ),
+        );
+        let mut env = crate::testutil::run_env(&dir, Vendor::Claude, "pin");
+        env.cli_bin = Some(stub);
+        let stderr = StderrTail::default();
+        let failure = session(&env, true, &stderr).unwrap_err();
+        assert_eq!(failure.to_string(), "the session exited with code 1");
+        write_stderr(&dir, &stderr.text());
+        let kept = std::fs::read_to_string(dir.join("stderr")).unwrap();
+        let lines: Vec<_> = kept.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "line 6",
+                "line 7",
+                "[line withheld by dvb's secret scan: anthropic-key]",
+                &"y".repeat(1024),
+                "fatal: out of memory",
+            ]
+        );
+    }
+
+    #[test]
     fn error_words_do_not_select_the_exit_code() {
         let other = Failure::from(ProviderError::Other("parse error: ordinary failure".into()));
         assert_eq!(outcome_for(&other), RunOutcome::SessionFailed);
@@ -1157,7 +1218,7 @@ mod tests {
         );
         let mut env = crate::testutil::run_env(&dir, Vendor::Codex, "gpt-6.1-sol");
         env.cli_bin = Some(stub);
-        let failure = session(&env, true).unwrap_err();
+        let failure = session(&env, true, &StderrTail::default()).unwrap_err();
         assert!(
             matches!(failure, Failure::Provider(ProviderError::Parse(_))),
             "{failure:?}"
@@ -1211,10 +1272,11 @@ mod tests {
         });
         let mut env = crate::testutil::run_env(&dir, Vendor::Claude, "claude-sonnet-5-5");
         env.cli_bin = Some(stub);
-        let failure = tokio::task::spawn_blocking(move || session(&env, true))
-            .await
-            .unwrap()
-            .unwrap_err();
+        let failure =
+            tokio::task::spawn_blocking(move || session(&env, true, &StderrTail::default()))
+                .await
+                .unwrap()
+                .unwrap_err();
         assert!(matches!(failure, Failure::Mismatch(_)), "{failure:?}");
         assert_eq!(outcome_for(&failure), RunOutcome::Mismatch);
         assert_eq!(
@@ -1257,7 +1319,7 @@ mod tests {
         env.cli_bin = Some(stub);
         // No engine listens on the run socket.
         env.run_sock = dir.join("unavailable.sock");
-        let failure = session(&env, true).unwrap_err();
+        let failure = session(&env, true, &StderrTail::default()).unwrap_err();
         assert!(failure.to_string().contains("run socket"), "{failure}");
         let pid = std::fs::read_to_string(dir.join("pid")).unwrap();
         assert!(

@@ -1020,10 +1020,23 @@ async fn socket_setup_authorization_resumes_only_the_recorded_repository_identit
     );
 }
 
+/// The default branch `trunk` is at commit `m2`.
+async fn main_head(server: &MockServer) {
+    response(
+        server,
+        "GET",
+        "/repos/example-org/project/commits/trunk",
+        200,
+        json!({"sha":"m2"}),
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn socket_main_checks_retain_successful_jobs_across_partial_reruns() {
     let server = MockServer::start().await;
     let forge = gateway(&server).await;
+    main_head(&server).await;
     response(
         &server,
         "GET",
@@ -1031,7 +1044,7 @@ async fn socket_main_checks_retain_successful_jobs_across_partial_reruns() {
         200,
         json!({"workflow_runs":[{
             "id":9,"workflow_id":1,"run_attempt":2,"event":"push","head_branch":"trunk",
-            "html_url":"https://github.invalid/runs/9"
+            "head_sha":"m2","html_url":"https://github.invalid/runs/9"
         }]}),
     )
     .await;
@@ -1068,49 +1081,44 @@ async fn socket_main_checks_retain_successful_jobs_across_partial_reruns() {
 }
 
 #[tokio::test]
-async fn socket_main_checks_use_manual_and_scheduled_runs_and_exclude_pr_runs() {
-    for event in ["workflow_dispatch", "schedule"] {
+async fn socket_main_checks_ignore_manual_scheduled_and_older_commit_runs() {
+    // `None`: main's head has no push or pull_request run, so its state is unknown.
+    for event in [None, Some("push"), Some("pull_request")] {
         for conclusion in ["failure", "success", "skipped"] {
             let server = MockServer::start().await;
             let forge = gateway(&server).await;
-            let old = json!({"id":7,"workflow_id":1,"run_attempt":1,"event":"push",
-                "head_branch":"trunk","html_url":"https://github.invalid/runs/7"});
-            let runs = json!({"workflow_runs":[
-                {"id":11,"workflow_id":1,"event":"pull_request_target","head_branch":"trunk"},
-                {"id":10,"workflow_id":1,"event":"pull_request","head_branch":"trunk"},
-                {"id":9,"workflow_id":1,"run_attempt":1,"event":event,
-                 "head_branch":"trunk","html_url":"https://github.invalid/runs/9"},
-                old.clone()
-            ]});
+            main_head(&server).await;
+            let run = |id: u64, event: &str, sha: &str| {
+                json!({"id":id,"workflow_id":1,"run_attempt":1,"event":event,
+                    "head_branch":"trunk","head_sha":sha,
+                    "html_url":format!("https://github.invalid/runs/{id}")})
+            };
+            // Newest first: manual and scheduled runs on the head, newer than
+            // its own run, and failing runs on an older main commit.
+            let mut runs = vec![
+                run(13, "workflow_dispatch", "m2"),
+                run(12, "schedule", "m2"),
+                run(11, "pull_request_target", "m2"),
+            ];
+            runs.extend(event.map(|event| run(10, event, "m2")));
+            runs.extend([run(8, "workflow_dispatch", "m1"), run(7, "push", "m1")]);
             Mock::given(method("GET"))
                 .and(path("/repos/example-org/project/actions/runs"))
-                .and(query_param("branch", "trunk"))
+                .and(query_param("head_sha", "m2"))
                 .and(query_param("status", "completed"))
-                .respond_with(move |request: &wiremock::Request| {
-                    let body = if request
-                        .url
-                        .query_pairs()
-                        .any(|(k, v)| k == "event" && v == "push")
-                    {
-                        json!({"workflow_runs":[old.clone()]})
-                    } else {
-                        runs.clone()
-                    };
-                    ResponseTemplate::new(200).set_body_json(body)
-                })
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(json!({"workflow_runs":runs})),
+                )
                 .expect(1)
                 .mount(&server)
                 .await;
             for (id, result) in [
-                (
-                    7,
-                    if conclusion == "failure" {
-                        "success"
-                    } else {
-                        "failure"
-                    },
-                ),
-                (9, conclusion),
+                (13, "failure"),
+                (12, "failure"),
+                (11, "failure"),
+                (10, conclusion),
+                (8, "failure"),
+                (7, "failure"),
             ] {
                 for route in [
                     format!("/actions/runs/{id}/jobs"),
@@ -1127,18 +1135,21 @@ async fn socket_main_checks_use_manual_and_scheduled_runs_and_exclude_pr_runs() 
             }
             assert_eq!(
                 forge.main_checks(&repo(), "trunk").await.unwrap(),
-                vec![CheckObservation {
-                    name: "rust".into(),
-                    status: match conclusion {
-                        "success" => ChecksStatus::Success,
-                        "skipped" => ChecksStatus::Missing,
-                        _ => ChecksStatus::Failed,
-                    },
-                    conclusion: Some(conclusion.into()),
-                    url: Some("https://github.invalid/runs/9".into()),
-                    run: None,
-                }],
-                "{event}: {conclusion} must supersede the older push and exclude PR results"
+                event
+                    .map(|_| CheckObservation {
+                        name: "rust".into(),
+                        status: match conclusion {
+                            "success" => ChecksStatus::Success,
+                            "skipped" => ChecksStatus::Missing,
+                            _ => ChecksStatus::Failed,
+                        },
+                        conclusion: Some(conclusion.into()),
+                        url: Some("https://github.invalid/runs/10".into()),
+                        run: None,
+                    })
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+                "{event:?}: {conclusion}: only main's head's push or pull_request run counts"
             );
         }
     }

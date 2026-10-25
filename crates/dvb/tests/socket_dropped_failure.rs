@@ -95,6 +95,7 @@ async fn socket_dropped_failures_are_cancelled_in_status_with_evidence_kept() {
                     run: run.clone(),
                     reason: EndReason::Completed,
                     detail: None,
+                    stderr: None,
                 },
                 EventKind::BranchPublished {
                     task: t.clone(),

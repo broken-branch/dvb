@@ -13,7 +13,6 @@ pub const BRANCH_REPAIRS_PER_TASK: u8 = 3;
 /// Publications by a role's routine hire that review findings or failed CI
 /// may send back before the task's next rounds go to the role's default hire.
 pub const ROUTINE_SEND_BACKS: u8 = 2;
-pub const MEMORY_CAP_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// After a reviewer's verdict and its last output, how long its unit may

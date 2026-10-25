@@ -163,6 +163,7 @@ async fn orchestrator_hires_and_retires_with_owner_validation_and_recorded_attri
             run: RunId::new("orchestrator-run"),
             reason: dvb_core::event::EndReason::Completed,
             detail: None,
+            stderr: None,
         }])
     })
     .unwrap();
@@ -1451,6 +1452,7 @@ async fn the_orchestrator_retries_a_failed_task_only_with_the_owners_yes_to_it()
                 run: RunId::new("b1"),
                 reason: EndReason::Crashed,
                 detail: None,
+                stderr: None,
             },
         ])
     })
@@ -1716,6 +1718,7 @@ async fn a_retry_waiting_for_the_lock_is_refused_once_its_yes_is_stale() {
                 run: RunId::new("b1"),
                 reason: dvb_core::event::EndReason::Crashed,
                 detail: None,
+                stderr: None,
             },
         ])
     })

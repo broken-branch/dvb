@@ -191,6 +191,7 @@ async fn planning_recovery_validates_dependencies_and_carries_roles_and_order_in
                 run: RunId::new("scope"),
                 reason: dvb_core::event::EndReason::Completed,
                 detail: None,
+                stderr: None,
             },
             EventKind::TaskStateChanged {
                 task: task.clone(),

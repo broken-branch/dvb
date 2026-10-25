@@ -160,6 +160,7 @@ mod tests {
                     run: run.clone(),
                     reason: EndReason::Completed,
                     detail: None,
+                    stderr: None,
                 }])
             })
             .unwrap();

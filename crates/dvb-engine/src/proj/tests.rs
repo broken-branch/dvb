@@ -68,6 +68,7 @@ fn empty_natural_completion_requires_saved_work_or_an_explicit_release() {
                 run: run.clone(),
                 reason: EndReason::Completed,
                 detail: None,
+                stderr: None,
             },
         ),
     ];
@@ -203,6 +204,7 @@ fn empty_natural_completion_requires_saved_work_or_an_explicit_release() {
             run: run.clone(),
             reason,
             detail: None,
+            stderr: None,
         };
         assert!(ready(&cut_short));
     }
@@ -259,6 +261,7 @@ fn empty_natural_completion_requires_saved_work_or_an_explicit_release() {
         run,
         reason: EndReason::Crashed,
         detail: None,
+        stderr: None,
     };
     assert!(ready(&failed)); // retain the existing failure retry/escalation
 }
@@ -321,6 +324,7 @@ fn planning_release_boundaries_and_question_lapse_replay() {
                 run: run.clone(),
                 reason: EndReason::Completed,
                 detail: None,
+                stderr: None,
             },
         ),
     ];
@@ -395,6 +399,7 @@ fn planning_release_boundaries_and_question_lapse_replay() {
                 run: RunId::new("builder"),
                 reason: EndReason::Completed,
                 detail: None,
+                stderr: None,
             },
             false,
         ),
@@ -763,6 +768,7 @@ fn a_reply_to_an_unapproved_plan_is_not_empty_planning_and_old_holds_replay_rele
                 run: planner.clone(),
                 reason: EndReason::Completed,
                 detail: None,
+                stderr: None,
             },
         ),
         ev(
@@ -779,6 +785,7 @@ fn a_reply_to_an_unapproved_plan_is_not_empty_planning_and_old_holds_replay_rele
                 run: answerer.clone(),
                 reason: EndReason::Completed,
                 detail: None,
+                stderr: None,
             },
         ),
     ];

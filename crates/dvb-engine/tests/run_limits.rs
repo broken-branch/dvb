@@ -309,6 +309,7 @@ fn building(previous: usize) -> Vec<EventKind> {
                 run: RunId::new(&run),
                 reason: EndReason::Crashed,
                 detail: None,
+                stderr: None,
             });
         }
     }

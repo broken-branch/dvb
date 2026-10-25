@@ -407,6 +407,29 @@ pub(crate) fn driver_cause(dir: &std::path::Path) -> Option<String> {
 
 const CAUSE_MAX: usize = 300;
 
+/// The last stderr lines the run's driver left, if any, scanned again here,
+/// where they leave the run: whole lines from the end within `STDERR_MAX`
+/// bytes, or the end of the last line when it alone is longer.
+pub(crate) fn driver_stderr(dir: &std::path::Path) -> Option<String> {
+    let text = dvb_forge::scan::scrub(&read_run_file(&dir.join("stderr")).ok()?);
+    let mut kept: Vec<&str> = Vec::new();
+    let mut len = 0;
+    for line in text.lines().rev().map(str::trim).filter(|l| !l.is_empty()) {
+        if len + line.len() > STDERR_MAX {
+            if kept.is_empty() {
+                kept.push(&line[line.ceil_char_boundary(line.len() - STDERR_MAX)..]);
+            }
+            break;
+        }
+        len += line.len() + 1;
+        kept.push(line);
+    }
+    kept.reverse();
+    (!kept.is_empty()).then(|| kept.join("\n"))
+}
+
+const STDERR_MAX: usize = 400;
+
 /// Why the run's driver stopped itself, if it left a `reason` file: a model
 /// mismatch or an unparseable CLI stream.
 pub(crate) fn driver_reason(dir: &std::path::Path) -> Option<EndReason> {

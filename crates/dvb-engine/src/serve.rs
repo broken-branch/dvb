@@ -1,5 +1,5 @@
 //! Serving the two sockets: the owner API on `engine.sock`, allowed to
-//! the install's owner and the engine's own user by `SO_PEERCRED`; the run API on
+//! root, the install's owner and the engine's own user by `SO_PEERCRED`; the run API on
 //! `run.sock`, where every call is attributed to the run whose unit (or, in dev
 //! mode, whose child process) the caller is in.
 //!
@@ -37,7 +37,7 @@ impl Connected<IncomingStream<'_, UnixListener>> for Peer {
     }
 }
 
-/// The owner API admits the recorded owner and the engine's own user.
+/// The owner API admits root, the recorded owner and the engine's own user.
 async fn owner_only(State(e): State<AppState>, req: Request, next: Next) -> Response {
     let uid = req
         .extensions()
@@ -45,7 +45,7 @@ async fn owner_only(State(e): State<AppState>, req: Request, next: Next) -> Resp
         .and_then(|c| c.0.uid);
     let me = crate::engine::own_uid();
     match uid {
-        Some(uid) if uid == e.cfg.owner_uid || uid == me => next.run(req).await,
+        Some(uid) if uid == 0 || uid == e.cfg.owner_uid || uid == me => next.run(req).await,
         Some(_) | None => {
             crate::api::with_version(
                 (
@@ -166,15 +166,15 @@ mod tests {
     #[tokio::test]
     async fn owner_peer_authorization_keeps_its_code_and_json_shape() {
         let dir = tempfile::tempdir().unwrap();
-        let e = crate::Engine::open(
-            crate::Config::dev(dir.path(), "unused".into()),
-            Default::default(),
-        )
-        .unwrap();
-        for uid in [
-            None,
-            Some(crate::own_uid() ^ u32::MAX),
-            Some(e.cfg.owner_uid),
+        let mut cfg = crate::Config::dev(dir.path(), "unused".into());
+        cfg.owner_uid = crate::own_uid() + 1;
+        let e = crate::Engine::open(cfg, Default::default()).unwrap();
+        for (uid, expected) in [
+            (None, StatusCode::FORBIDDEN),
+            (Some(crate::own_uid() + 2), StatusCode::FORBIDDEN),
+            (Some(e.cfg.owner_uid), StatusCode::OK),
+            (Some(crate::own_uid()), StatusCode::OK),
+            (Some(0), StatusCode::OK),
         ] {
             let app = crate::api::router(e.clone())
                 .layer(axum::middleware::from_fn_with_state(e.clone(), owner_only));
@@ -192,10 +192,8 @@ mod tests {
             let bytes = axum::body::to_bytes(response.into_body(), 1 << 16)
                 .await
                 .unwrap();
-            if uid == Some(e.cfg.owner_uid) {
-                assert_eq!(status, StatusCode::OK);
-            } else {
-                assert_eq!(status, StatusCode::FORBIDDEN);
+            assert_eq!(status, expected, "peer uid {uid:?}");
+            if expected == StatusCode::FORBIDDEN {
                 let refusal: Refusal = serde_json::from_slice(&bytes).unwrap();
                 assert_eq!(refusal.code, RefusalCode::RoleNotAllowed);
             }

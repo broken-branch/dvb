@@ -6,7 +6,6 @@
 use crate::exec::RunEnv;
 use crate::{claude, codex};
 use dvb_core::Vendor;
-use dvb_core::caps::MEMORY_CAP_BYTES;
 use dvb_core::event::{PreflightCheck, PreflightCode};
 use dvb_core::git::Git;
 use dvb_core::run_verbs::PreflightBody;
@@ -109,14 +108,10 @@ pub fn memory_probe(dev: bool, unit: Option<&str>, memory_max: Option<&str>) -> 
     let Some(unit) = unit else {
         return Err("not in a dvb run unit".into());
     };
-    match memory_max.map(|s| (s, s.trim().parse::<u64>())) {
-        Some((_, Ok(bytes))) if bytes <= MEMORY_CAP_BYTES => {
-            Ok(format!("{unit}: memory.max {bytes}"))
-        }
-        Some((_, Ok(bytes))) => Err(format!("{unit}: memory.max {bytes} is above the cap")),
-        Some((raw, Err(_))) => Err(format!("{unit}: memory.max {}", raw.trim())),
-        None => Err(format!("{unit}: memory.max cannot be read")),
-    }
+    Ok(match memory_max {
+        Some(raw) => format!("{unit}: memory.max {}", raw.trim()),
+        None => format!("{unit}: memory.max cannot be read"),
+    })
 }
 
 /// What the process sees of its surroundings (faked in tests).
@@ -152,21 +147,28 @@ fn home_probe(env: &RunEnv, amb: &Ambient) -> Probe {
 }
 
 fn cred_probe(amb: &Ambient) -> Probe {
-    let visible: Vec<String> = [
-        "GH_TOKEN",
-        "GITHUB_TOKEN",
-        "SSH_AUTH_SOCK",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-    ]
-    .iter()
-    .filter(|k| amb.vars.iter().any(|v| v == *k))
-    .map(|k| format!("${k}"))
-    .collect();
-    if visible.is_empty() {
-        Ok("no GitHub, SSH or API credential visible".into())
+    let visible: Vec<String> = ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK"]
+        .iter()
+        .filter(|k| amb.vars.iter().any(|v| v == *k))
+        .map(|k| format!("${k}"))
+        .collect();
+    let api_keys: Vec<String> = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
+        .iter()
+        .filter(|k| amb.vars.iter().any(|v| v == *k))
+        .map(|k| format!("${k}"))
+        .collect();
+    let mut detail = if visible.is_empty() {
+        "no GitHub or SSH credential visible".into()
     } else {
-        Err(format!("visible: {}", visible.join(", ")))
+        format!("visible: {}", visible.join(", "))
+    };
+    if !api_keys.is_empty() {
+        detail.push_str(&format!("; API keys visible: {}", api_keys.join(", ")));
+    }
+    if visible.is_empty() {
+        Ok(detail)
+    } else {
+        Err(detail)
     }
 }
 
@@ -545,11 +547,23 @@ mod tests {
     #[test]
     fn pf_memory_cap() {
         let u = Some("dvb-run-claude@r1.service");
-        assert!(memory_probe(false, u, Some("8589934592\n")).is_ok());
-        assert!(memory_probe(false, u, Some("max\n")).is_err());
-        assert!(memory_probe(false, u, Some("17179869184")).is_err());
-        assert!(memory_probe(false, u, None).is_err());
-        assert!(memory_probe(false, None, None).is_err());
+        for value in ["8589934592", "17179869184", "max"] {
+            assert_eq!(
+                memory_probe(false, u, Some(&format!("{value}\n"))),
+                Ok(format!("dvb-run-claude@r1.service: memory.max {value}"))
+            );
+        }
+        assert_eq!(
+            memory_probe(false, u, None),
+            Ok("dvb-run-claude@r1.service: memory.max cannot be read".into())
+        );
+        let c = check(PreflightCode::PfMemoryCap, memory_probe(false, None, None));
+        assert!(!c.ok);
+        assert_eq!(c.code, PreflightCode::PfMemoryCap);
+        assert_eq!(
+            c.detail,
+            "not in a dvb run unit. Fix: Reinstall the unit files"
+        );
         assert!(memory_probe(true, None, None).is_ok());
     }
 
@@ -592,19 +606,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pf_cred_visible_for_an_api_key_in_the_environment() {
+    async fn api_keys_are_reported_without_failing_preflight() {
         let f = fixture(Vendor::Fake, "fake-1").await;
-        let body = run_in(
-            &f.env,
-            &Ambient {
-                home: f.env.home().to_string_lossy().into_owned(),
-                vars: vec!["ANTHROPIC_API_KEY".into(), "PATH".into()],
-            },
-        )
-        .await;
-        assert_eq!(failing(&body), vec![PreflightCode::PfCredVisible]);
-        let c = body.checks.iter().find(|c| !c.ok).unwrap();
-        assert!(c.detail.contains("$ANTHROPIC_API_KEY") && !c.detail.contains("PATH"));
+        for keys in [
+            vec!["ANTHROPIC_API_KEY"],
+            vec!["OPENAI_API_KEY"],
+            vec!["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
+        ] {
+            let body = run_in(
+                &f.env,
+                &Ambient {
+                    home: f.env.home().to_string_lossy().into_owned(),
+                    vars: keys
+                        .iter()
+                        .copied()
+                        .chain(["PATH"])
+                        .map(str::to_owned)
+                        .collect(),
+                },
+            )
+            .await;
+            assert_eq!(failing(&body), vec![], "{:?}", body.checks);
+            let c = body
+                .checks
+                .iter()
+                .find(|c| c.code == PreflightCode::PfCredVisible)
+                .unwrap();
+            let names: Vec<_> = keys.iter().map(|k| format!("${k}")).collect();
+            assert_eq!(
+                c.detail,
+                format!(
+                    "no GitHub or SSH credential visible; API keys visible: {}",
+                    names.join(", ")
+                )
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn pf_cred_visible_for_github_tokens_or_an_ssh_agent() {
+        let f = fixture(Vendor::Fake, "fake-1").await;
+        for name in ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK"] {
+            let body = run_in(
+                &f.env,
+                &Ambient {
+                    home: f.env.home().to_string_lossy().into_owned(),
+                    vars: vec![
+                        name.into(),
+                        "ANTHROPIC_API_KEY".into(),
+                        "OPENAI_API_KEY".into(),
+                        "PATH".into(),
+                    ],
+                },
+            )
+            .await;
+            assert_eq!(failing(&body), vec![PreflightCode::PfCredVisible]);
+            let c = body.checks.iter().find(|c| !c.ok).unwrap();
+            assert_eq!(
+                c.detail,
+                format!(
+                    "visible: ${name}; API keys visible: $ANTHROPIC_API_KEY, $OPENAI_API_KEY. \
+                     Fix: Remove it from the worker's reach; see the install notes"
+                )
+            );
+        }
     }
 
     #[tokio::test]

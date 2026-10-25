@@ -22,7 +22,3 @@ regex = '\bsk-(proj-)?[A-Za-z0-9_-]{20,}'
 [[rule]]
 id = "aws-access-key"
 regex = '\bAKIA[0-9A-Z]{16}\b'
-
-[[rule]]
-id = "run-work-dir"
-regex = '/var/lib/dvb/work/[0-9A-HJKMNP-TV-Z]{26}\b'

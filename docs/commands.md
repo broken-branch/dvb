@@ -354,9 +354,15 @@ again. Status shows the goal as "Plan on hold" with a `Needs you:` line naming
 `dvb resume <goal-id>` (in `--json`, a `needs_you_items` entry of kind `plan`),
 though it leaves the "need you" count, and `dvb wait` on the goal ends with
 code 6. `dvb resume <goal-id>` asks the same plan question again, for the same
-plan, with no new planning; a goal with no plan on hold is refused with
-`PLAN_NOT_PARKED`. To get a different plan, answer the question in words: a
-written reply has the orchestrator plan again.
+plan, with no new planning, under a new question id: it prints
+`Needs you: <subject> (<question-id>)`, and with `--json`
+`{"goal": {...}, "question": {...}}`, the goal as `dvb goal drop --json` prints
+it and the question as in `dvb status --json`'s `questions`. `dvb wait <goal-id>
+--until plan` also prints the new question. Answering the old question is
+refused with `ALREADY_TERMINAL`, its detail naming the new one: `this question
+is already answered; the plan is asked again in question <question-id>`. A goal
+with no plan on hold is refused with `PLAN_NOT_PARKED`. To get a different plan,
+answer the question in words: a written reply has the orchestrator plan again.
 
 ## Answering a question
 
@@ -415,6 +421,15 @@ with the text.
 dvb retry 01M597ZQ "Remove the PDF; generate it in the test instead."
 ```
 
+It prints `Task <id>: <state>`. With `--json` it prints `{"task": {...}}`, the
+task as `dvb status <project> --json` lists it in `tasks`, after the retry:
+
+```json
+{"task": {"id": "01M7…", "goal": "01M5…", "state": "planned",
+          "title": "Add the parser", "role": "01M2…", "role_name": "backend",
+          "pr": null, "reason": null, "waiting_for": []}}
+```
+
 A task stopped with kept, unpublished work and no PR (for example held on an
 unmet completion condition before its first publication) gets one builder
 round on that work with the text, then the completion check, publishing,
@@ -438,11 +453,13 @@ finding with its state, severity, place and detail. Both are refused with
 
 `dvb task diff <task> --json` prints
 `{"task": "01M7…", "base": "<commit>", "head": "<commit>", "diff": "diff --git …"}`.
-`dvb task verdict <task> --json` prints the review as the engine records it:
+`dvb task verdict <task> --json` prints the review as the engine records it,
+with `role_name`, the reviewer role's slug beside its id in `role`:
 
 ```json
 {"verdict": "01M8…", "task": "01M7…", "head": "<commit>", "run": "01M9…",
- "role": "code-reviewer", "model": "claude-opus-5-5", "vendor": "claude",
+ "role": "01M3…", "role_name": "code-reviewer",
+ "model": "claude-opus-5-5", "vendor": "claude",
  "open_findings": 1, "summary": "Needs work",
  "findings": [{"severity": "high", "file": "src/parse.rs", "line": 12,
                "title": "Empty input panics", "detail": "…", "open": true}]}
@@ -473,7 +490,9 @@ title, `Stopped` or `Failed`, and the command that continues it (`dvb resume
 leaving it stopped counts with the task; project status shows its options under
 the task's line. A goal whose plan is on hold also gets a line,
 `Needs you: <goal> (<goal-id>) - Plan on hold: dvb resume <goal-id>`, though it
-is not counted. A paused project's status says so before its goals:
+is not counted, and so does a paused project:
+`Needs you: Project <name> (<project-id>) - Paused: dvb resume <name>`, also
+not counted. A paused project's status says so before its goals too:
 `Project <name> is paused: nothing new starts until dvb resume <name>`. A task
 waiting for an automatic retry is `Retrying`, with why: after a run's end, for
 example `Work ended: crashed (exit 4: …); attempt 2 starts automatically`.
@@ -498,6 +517,8 @@ the engine's ("the run units are older than this engine: re-run install.sh").
     "question": null, "command": "dvb retry 01M7…"},
    {"kind": "plan", "id": "01M3…", "project": "01M4…", "project_name": "example",
     "title": "Add a search box", "command": "dvb resume 01M3…"},
+   {"kind": "project", "id": "01M4…", "project": "01M4…", "project_name": "example",
+    "title": "example", "command": "dvb resume example"},
    {"kind": "question", "id": "01M6…", "project": "01M4…", "project_name": "example",
     "title": "Approve the plan for …?", "command": "dvb answer 01M6… <n>"}]}
 ```
@@ -511,7 +532,10 @@ line, in the text's order; `command` continues it, with `<n>` an option's `id`
 (`project_name`). A task item's `state` is `failed` or `stopped`, and `reason`
 the failure or why it stopped, the same as the task's `reason` in `tasks`, else
 null. A `plan` item is a goal whose plan is on hold: its `id` is the goal's and
-its `title` the goal's first line; it is not in the `needs_you` count.
+its `title` the goal's first line; it is not in the `needs_you` count. A
+`project` item is a paused project (of the project shown, with one): its `id`
+and `project` are the project's id, its `title` its name; it is not in the
+`needs_you` count either.
 
 With a project, the object also has `project` (`{"id", "name", "paused"}`,
 `paused` true while the project is paused), the goals and tasks the text lists,
@@ -543,12 +567,14 @@ or why it retries, else null;
 `dvb watch` prints events as they happen, one line each: the event id, its
 kind and what happened. `--after <id>` starts after that event, `--once` prints
 what has happened so far and exits, and `--project`, `--role`, `--task` and
-`--kind` (repeatable) filter. When the engine restarts, it reconnects.
+`--kind` (repeatable) filter. When the engine restarts, it reconnects. A line
+that names a role gives its id followed by its slug, for example
+`01M3… (backend) started 01M7…`.
 
 `dvb watch --json` prints one JSON object per line: the event as the engine
 serves it, with `time` (RFC 3339, UTC) and `text`, the line's wording when the
-kind has one. `payload` holds the kind's fields, as in
-[contracts/events.md](../contracts/events.md):
+kind has one, naming a role the same way. `payload` holds the kind's fields,
+with the bare role id, as in [contracts/events.md](../contracts/events.md):
 
 ```json
 {"id": 1204, "at": 1792800000000, "time": "2026-10-24T00:00:00.000Z",
@@ -565,23 +591,27 @@ pass it as `--after <id>` the next time.
 `dvb wait <goal-id> [--until plan|done] [--timeout <minutes>] [--json]` blocks
 until the goal reaches a point a script or agent acts on, and says which with its
 exit code, so nothing has to poll `dvb status`. Only the named goal's tasks and
-questions end the wait; a failed or stopped task or a question of another goal
-does not. A state that already holds when the command starts returns at once.
-When the engine restarts during the wait, it reconnects and carries on.
+questions, and its project's pause, end the wait; a failed or stopped task or a
+question of another goal does not. A state that already holds when the command
+starts returns at once; `--timeout 0` checks once and exits 4 when nothing
+holds. When the engine restarts during the wait, it reconnects and carries on.
+Reviews do not stop the wait: they run without you, and you read them after
+with `dvb task verdict` and `dvb task diff` ([Reading a review](#reading-a-review)).
 
 | Code | Meaning and output |
 |---|---|
 | 0 | `--until done` (the default): the goal is Done; one `Merged PR #<n> as <commit> (task <id>)` line per merged pull request. `--until plan`: its plan question is open, printed as below, or its plan is already approved (the goal's status line). |
 | 1 | dvb could not read the engine: a refusal or an unreadable reply. |
-| 2 | A question of this goal waits for you: `Question <id>: <subject>` and its numbered options, so `dvb answer <id> <n>` can follow. |
+| 2 | A usage error only: a missing or unknown argument, as for every command. Nothing was checked. |
 | 3 | A task of this goal failed, with or without a question: `Task <id> failed: <reason>` and `Retry it: dvb retry <id>`. |
 | 4 | `--timeout` elapsed; `--timeout 0` checks once. |
 | 5 | The goal does not exist (`dvb: refused: NOT_FOUND (no goal <id>)` on stderr) or was dropped (its status line). |
-| 6 | A task of this goal is stopped: `Task <id> stopped: <reason>` and `Resume it: dvb resume <id>`; or its plan is on hold ([A plan on hold](#a-plan-on-hold)): the goal's status line and `Ask it again: dvb resume <goal-id>`. |
+| 6 | Nothing goes on until you act. A task of this goal is stopped: `Task <id> stopped: <reason>` and `Resume it: dvb resume <id>`; or its plan is on hold ([A plan on hold](#a-plan-on-hold)): the goal's status line and `Ask it again: dvb resume <goal-id>`; or its project is paused: `Project <name> is paused: nothing new starts until dvb resume <name>`. |
+| 7 | A question of this goal waits for you: `Question <id>: <subject>` and its numbered options, so `dvb answer <id> <n>` can follow. |
 
-The checks go in this order: a failed task (3), then a question (2), then a
-stopped task or a plan on hold (6), so a question about a stopped task is
-printed as the question.
+The checks go in this order: a failed task (3), then a question (7), then a
+stopped task, a plan on hold or a paused project (6), so a question about a
+stopped task is printed as the question.
 
 ```sh
 dvb wait 01M5 --until plan && dvb answer <question-id> <n>
@@ -591,21 +621,24 @@ dvb wait 01M5 --timeout 120
 With `--json`, a wait that ends on the goal prints one object instead of the
 lines, with the same exit code; a timeout or an error prints nothing on stdout.
 `outcome` says what ended it, `goal` and `state` are the goal's id and state,
-and the rest depends on `outcome`:
+and the rest depends on `outcome`. `state` is the goal's state as in
+`dvb status --json`, except that a goal whose tasks all ended, some stopped and
+none failed, is `stopped` rather than `failed`.
 
 | `outcome` | Code | Also |
 |---|---|---|
 | `done` | 0 | `merged`: `[{"task", "pr", "commit"}]`, one per merged pull request |
 | `plan_question` | 0 | `question`: as in `dvb status --json`'s `questions` |
 | `plan_approved` | 0 | nothing |
-| `question` | 2 | `question` |
+| `question` | 7 | `question` |
 | `failed` | 3 | `task`: `{"id", "title", "reason", "command": "dvb retry <id>"}` |
 | `dropped` | 5 | nothing |
 | `stopped` | 6 | `task`: `{"id", "title", "reason", "command": "dvb resume <id>"}` (`reason` null when nothing says why) |
 | `plan_parked` | 6 | `command`: `dvb resume <goal-id>` |
+| `project_paused` | 6 | `command`: `dvb resume <project-name>` |
 
 ```json
-{"outcome": "stopped", "goal": "01M5…", "state": "failed",
+{"outcome": "stopped", "goal": "01M5…", "state": "stopped",
  "task": {"id": "01M7…", "title": "Add the parser",
           "reason": "not before Monday", "command": "dvb resume 01M7…"}}
 ```
@@ -642,9 +675,9 @@ the model the latest builder round ran on.
 
 | Command | Action |
 |---|---|
-| `dvb stop <task> [--reason <text>]` | Stop a task, in any state; its branch, workspace and results are kept. With a reason the orchestrator is not woken to ask why. |
-| `dvb pause <project>` | No new runs or steps start until the project is resumed; what is running carries on. |
-| `dvb resume <project\|task\|goal>` | Unpause a project, resume a stopped task from where it stopped, or ask a goal's plan on hold again ([A plan on hold](#a-plan-on-hold)). |
+| `dvb stop <task> [--reason <text>] [--json]` | Stop a task, in any state; its branch, workspace and results are kept. The reason is recorded and shown as the task's `reason`; with a reason the orchestrator is not woken to ask why, without one it is woken and may ask you. |
+| `dvb pause <project> [--json]` | No new runs or steps start until the project is resumed; what is running carries on. `dvb wait` on its goals ends with code 6. |
+| `dvb resume <project\|task\|goal> [--json]` | Unpause a project, resume a stopped task from where it stopped, or ask a goal's plan on hold again under a new question id ([A plan on hold](#a-plan-on-hold)). An id that is none of these is refused: `NOT_FOUND (no task, goal or project <id>)`. |
 | `dvb redirect <goal> <text>` | Change course: the goal's unstarted tasks are dropped and the orchestrator plans the new text, then asks for your yes. |
 | `dvb brief <project> [<text>\|--clear]` | Show, set or remove the project's brief: kept only in dvb, it goes into the orchestrator's and every builder's prompt and is never sent to GitHub. |
 | `dvb usage [<project>]` | Tokens, estimated cost and each vendor's usage window. |
@@ -657,3 +690,9 @@ the model the latest builder round ran on.
 | `dvb chart <project> report\|group\|reorder\|swap ...` | Move roles on the chart: who reports to whom, groups, order, or swap a role with its lead. |
 | `dvb retire <hire-id>` | Retire a hire, keeping its record. |
 | `dvb project list [--json]` | List projects: name, id and repository, one per line; `--json` prints `{"projects": [...]}`, each as `project add --json` prints it. |
+
+With `--json`, `stop`, `retry` and `resume <task>` print `{"task": {...}}` as
+[`dvb retry`](#retrying-and-sending-a-task-back) does; `pause` and
+`resume <project>` print `{"project": {...}}`, the project after the change as
+`dvb project list --json` lists it (`paused` true or false); `resume <goal>`
+prints `{"goal": {...}, "question": {...}}` ([A plan on hold](#a-plan-on-hold)).

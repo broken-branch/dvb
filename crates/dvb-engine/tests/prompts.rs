@@ -1483,6 +1483,7 @@ fn failed_builder(e: &AppState, p: &ProjectId, task: &TaskId) {
                 run,
                 reason: dvb_core::event::EndReason::Crashed,
                 detail: None,
+                stderr: None,
             },
             EventKind::TaskFailed {
                 task: task.clone(),

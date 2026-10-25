@@ -199,6 +199,7 @@ async fn defer_automatic(e: &AppState, task: &TaskId) {
                 run,
                 reason: dvb_core::event::EndReason::Completed,
                 detail: None,
+                stderr: None,
             })
             .collect())
     })

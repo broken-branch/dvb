@@ -282,7 +282,11 @@ pub(crate) async fn task_once(e: &AppState, task: &TaskId) -> Result<(), Fail> {
             Some(reason),
         ) => {
             if !r.verdict_given {
-                let cmd = Command::UnitEnded(reason.clone());
+                let cmd = Command::UnitEnded {
+                    reason: reason.clone(),
+                    detail: r.ended_detail.clone(),
+                    stderr: r.ended_stderr.clone(),
+                };
                 e.decide(
                     e.proj(),
                     task,

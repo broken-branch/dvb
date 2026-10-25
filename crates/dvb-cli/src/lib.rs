@@ -248,13 +248,20 @@ pub enum Verb {
         /// woken to ask why.
         #[arg(long)]
         reason: Option<String>,
+        /// Print {"task": {...}}: the task as `dvb status <project> --json` lists it.
+        #[arg(long)]
+        json: bool,
     },
     /// Resume a stopped task from where it stopped, unpause a project, or ask
-    /// a goal's plan on hold ("Not yet") again: the same plan question, with
-    /// no new plan.
+    /// a goal's plan on hold ("Not yet") again: the same plan question, under
+    /// a new question id, with no new plan.
     Resume {
         /// A task id, a goal id, or a project's name or id.
         id: String,
+        /// Print {"task": {...}}, {"project": {...}}, or for a goal
+        /// {"goal": {...}, "question": {...}} with the new question's id and options.
+        #[arg(long)]
+        json: bool,
     },
     /// Retry a failed task, resume a task stopped on a blocked or partial
     /// result, or send a task with a PR back to its builder with the retry text.
@@ -262,10 +269,18 @@ pub enum Verb {
         task: String,
         /// Missing information for this retry's builder; at most 16 KiB of UTF-8.
         text: Vec<String>,
+        /// Print {"task": {...}}: the task as `dvb status <project> --json` lists it.
+        #[arg(long)]
+        json: bool,
     },
     /// Pause a project: no new runs or steps start until it is resumed; what is
     /// running carries on.
-    Pause { project: String },
+    Pause {
+        project: String,
+        /// Print {"project": {...}}: the project as `dvb project list --json` lists it.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show a project's brief, or set it from the text given (`--clear` removes
     /// it). The brief is kept only in dvb and goes into the orchestrator's and
     /// every builder's prompt; it is never sent to GitHub.
@@ -303,9 +318,9 @@ pub enum Verb {
         json: bool,
     },
     /// Block until a goal's plan is asked, it is Done, one of its tasks fails
-    /// or stops, or its plan is on hold. Only this goal's tasks and questions
-    /// end the wait; a state that already holds returns at once. Reconnects
-    /// when the engine restarts.
+    /// or stops, its plan is on hold, or its project is paused. Only this
+    /// goal's tasks and questions end the wait; reviews do not. A state that
+    /// already holds returns at once. Reconnects when the engine restarts.
     #[command(after_help = wait::EXIT_CODES)]
     Wait {
         /// The goal's id, as `dvb goal` and `dvb status <project>` print it.
@@ -1292,23 +1307,34 @@ async fn run(target: &Target, client: &Client, verb: Verb) -> Result<i32, CliErr
         Verb::Task(TaskVerb::Verdict { task, json }) => {
             let v: VerdictView = client.get(&format!("/tasks/{task}/verdict")).await?;
             if json {
-                write_json(&v)?;
+                let t: TaskView = client.get(&format!("/tasks/{task}")).await?;
+                let roles: Vec<RoleRecord> = client
+                    .get(&format!("/projects/{}/roles", t.project))
+                    .await?;
+                let mut out = serde_json::to_value(&v).map_err(client::message)?;
+                out["role_name"] = role_name(&roles, &v.role).into();
+                write_json(&out)?;
             } else {
                 write_stdout(format_args!("{}\n", verdict_text(&v)))?;
             }
         }
-        Verb::Stop { task, reason } => {
+        Verb::Stop { task, reason, json } => {
             let body = dvb_core::api::StopTask { reason };
             let t: TaskView = client.post(&format!("/tasks/{task}/stop"), &body).await?;
-            let word = if let TaskState::Stopped { was } = &t.state {
-                dvb_core::wording::stopped_word(was).to_owned()
+            if json {
+                write_task_json(client, &t).await?;
             } else {
-                state_word(&t.state)
-            };
-            write_stdout(format_args!("Task {}: {word}\n", t.id))?;
+                let word = if let TaskState::Stopped { was } = &t.state {
+                    dvb_core::wording::stopped_word(was).to_owned()
+                } else {
+                    state_word(&t.state)
+                };
+                write_stdout(format_args!("Task {}: {word}\n", t.id))?;
+            }
         }
-        Verb::Resume { id } => {
+        Verb::Resume { id, json } => {
             let projects: Vec<ProjectView> = client.get("/projects").await?;
+            let goals: Vec<GoalView> = client.get("/goals").await?;
             if let Some(p) = projects
                 .iter()
                 .find(|p| p.name == id || p.id.as_str() == id)
@@ -1316,33 +1342,58 @@ async fn run(target: &Target, client: &Client, verb: Verb) -> Result<i32, CliErr
                 let () = client
                     .post(&format!("/projects/{}/resume", p.id), &())
                     .await?;
-                write_stdout(format_args!("Project {} resumed\n", p.name))?;
-            } else if client
-                .get::<Vec<GoalView>>("/goals")
-                .await?
-                .iter()
-                .any(|g| g.id.as_str() == id)
-            {
+                if json {
+                    write_project_json(client, &p.id).await?;
+                } else {
+                    write_stdout(format_args!("Project {} resumed\n", p.name))?;
+                }
+            } else if goals.iter().any(|g| g.id.as_str() == id) {
                 let q: QuestionView = client.post(&format!("/goals/{id}/resume"), &()).await?;
-                write_stdout(format_args!("Needs you: {} ({})\n", q.subject, q.id))?;
+                if json {
+                    let goals: Vec<GoalView> = client.get("/goals").await?;
+                    let g = goals
+                        .iter()
+                        .find(|g| g.id.as_str() == id)
+                        .ok_or_else(|| not_found(format!("no goal {id}")))?;
+                    write_json(&serde_json::json!({"goal": g, "question": question_json(&q)}))?;
+                } else {
+                    write_stdout(format_args!("Needs you: {} ({})\n", q.subject, q.id))?;
+                }
             } else {
-                let t: TaskView = client.post(&format!("/tasks/{id}/resume"), &()).await?;
-                write_stdout(format_args!("Task {}: {}\n", t.id, state_word(&t.state)))?;
+                let t: TaskView = match client.post(&format!("/tasks/{id}/resume"), &()).await {
+                    Err(CliError::Refused(r)) if r.code == dvb_core::RefusalCode::NotFound => {
+                        return Err(not_found(format!("no task, goal or project {id}")));
+                    }
+                    other => other?,
+                };
+                if json {
+                    write_task_json(client, &t).await?;
+                } else {
+                    write_stdout(format_args!("Task {}: {}\n", t.id, state_word(&t.state)))?;
+                }
             }
         }
-        Verb::Retry { task, text } => {
+        Verb::Retry { task, text, json } => {
             let body = dvb_core::api::RetryTask {
                 text: (!text.is_empty()).then(|| text.join(" ")),
             };
             let t: TaskView = client.post(&format!("/tasks/{task}/retry"), &body).await?;
-            write_stdout(format_args!("Task {}: {}\n", t.id, state_word(&t.state)))?;
+            if json {
+                write_task_json(client, &t).await?;
+            } else {
+                write_stdout(format_args!("Task {}: {}\n", t.id, state_word(&t.state)))?;
+            }
         }
-        Verb::Pause { project } => {
+        Verb::Pause { project, json } => {
             let p = project_id(client, &project).await?;
             let () = client
                 .post(&format!("/projects/{}/pause", p.id), &())
                 .await?;
-            write_stdout(format_args!("Project {} paused\n", p.name))?;
+            if json {
+                write_project_json(client, &p.id).await?;
+            } else {
+                write_stdout(format_args!("Project {} paused\n", p.name))?;
+            }
         }
         Verb::Brief {
             project,
@@ -1667,12 +1718,18 @@ async fn status(
         None => None,
     };
     let questions: Vec<QuestionView> = client.get("/questions?open=true").await?;
+    let paused = projects
+        .iter()
+        .filter(|pr| pr.paused && listing.as_ref().is_none_or(|l| l.project.id == pr.id))
+        .cloned()
+        .collect();
     let view = StatusView {
         status: s,
         only,
         listing,
         questions,
         parked,
+        paused,
         projects,
     };
     if json {
@@ -1692,6 +1749,8 @@ struct StatusView {
     questions: Vec<QuestionView>,
     /// The goals whose plan is on hold (of the project, with one).
     parked: Vec<GoalView>,
+    /// The paused projects (the project, with one).
+    paused: Vec<ProjectView>,
     /// Every project, for the names of the items' projects.
     projects: Vec<ProjectView>,
 }
@@ -1815,6 +1874,15 @@ fn status_text(v: &StatusView) -> String {
             g.id
         ));
     }
+    for p in &v.paused {
+        out.push_str(&format!(
+            "Needs you: Project {} ({}) - {}: dvb resume {}\n",
+            p.name,
+            p.id,
+            dvb_core::wording::text("project.paused"),
+            p.name
+        ));
+    }
     for q in v.own_questions() {
         out.push_str(&format!("Needs you: {} ({})\n", q.subject, q.id));
         for o in &q.options {
@@ -1869,6 +1937,16 @@ fn status_json(v: &StatusView) -> Result<serde_json::Value, CliError> {
             "command": format!("dvb resume {}", g.id),
         }));
     }
+    for p in &v.paused {
+        items.push(json!({
+            "kind": "project",
+            "id": p.id,
+            "project": p.id,
+            "project_name": p.name,
+            "title": p.name,
+            "command": format!("dvb resume {}", p.name),
+        }));
+    }
     for q in v.own_questions() {
         items.push(json!({
             "kind": "question",
@@ -1904,23 +1982,50 @@ fn status_json(v: &StatusView) -> Result<serde_json::Value, CliError> {
         out["tasks"] = l
             .tasks
             .iter()
-            .map(|t| {
-                Ok(json!({
-                    "id": t.id,
-                    "goal": t.goal,
-                    "state": state_tag(&t.state)?,
-                    "title": t.title,
-                    "role": t.role,
-                    "role_name": l.roles.iter().find(|r| r.id == t.role).map(|r| &r.slug),
-                    "pr": t.pr,
-                    "reason": t.reason.as_deref().or_else(|| failure(&t.state)),
-                    "waiting_for": t.waiting_for,
-                }))
-            })
+            .map(|t| task_json(t, &l.roles))
             .collect::<Result<Vec<_>, CliError>>()?
             .into();
     }
     Ok(out)
+}
+
+/// A task as `dvb status <project> --json` lists it, with its role's slug from `roles`.
+fn task_json(t: &TaskView, roles: &[RoleRecord]) -> Result<serde_json::Value, CliError> {
+    Ok(serde_json::json!({
+        "id": t.id,
+        "goal": t.goal,
+        "state": state_tag(&t.state)?,
+        "title": t.title,
+        "role": t.role,
+        "role_name": role_name(roles, &t.role),
+        "pr": t.pr,
+        "reason": t.reason.as_deref().or_else(|| failure(&t.state)),
+        "waiting_for": t.waiting_for,
+    }))
+}
+
+/// A role's slug, as `dvb role list` prints it; `None` for a role no longer listed.
+fn role_name<'a>(roles: &'a [RoleRecord], id: &RoleId) -> Option<&'a str> {
+    roles.iter().find(|r| &r.id == id).map(|r| r.slug.as_str())
+}
+
+/// `--json` of a verb that changed a task: `{"task": …}`, as status lists it.
+async fn write_task_json(client: &Client, t: &TaskView) -> Result<(), CliError> {
+    let roles: Vec<RoleRecord> = client
+        .get(&format!("/projects/{}/roles", t.project))
+        .await?;
+    write_json(&serde_json::json!({"task": task_json(t, &roles)?}))
+}
+
+/// `--json` of a verb that paused or resumed a project: `{"project": …}`, as
+/// `dvb project list --json` lists it, read after the change.
+async fn write_project_json(client: &Client, id: &dvb_core::ProjectId) -> Result<(), CliError> {
+    let projects: Vec<ProjectView> = client.get("/projects").await?;
+    let p = projects
+        .into_iter()
+        .find(|p| &p.id == id)
+        .ok_or_else(|| not_found(format!("no project {id}")))?;
+    write_json(&serde_json::json!({"project": p}))
 }
 
 fn failure(state: &TaskState) -> Option<&str> {

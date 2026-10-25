@@ -559,7 +559,7 @@ impl Sim {
                 cmd,
                 Command::Reconcile(_)
                     | Command::Stop(_)
-                    | Command::UnitEnded(_)
+                    | Command::UnitEnded { .. }
                     | Command::HeadWritten
                     | Command::VerdictRecorded { .. }
             ));
@@ -737,7 +737,14 @@ impl Sim {
         {
             u.active = false;
             if !u.verdict_given {
-                let _ = self.command(&Command::UnitEnded(reason), vec![]);
+                let _ = self.command(
+                    &Command::UnitEnded {
+                        reason,
+                        detail: None,
+                        stderr: None,
+                    },
+                    vec![],
+                );
             }
         }
     }

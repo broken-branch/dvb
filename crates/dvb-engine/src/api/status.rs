@@ -169,6 +169,7 @@ mod tests {
                     run: RunId::new("a"),
                     reason: EndReason::Completed,
                     detail: None,
+                    stderr: None,
                 },
                 EventKind::QuestionAnswered {
                     question: QuestionId::new("a"),

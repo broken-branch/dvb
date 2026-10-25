@@ -20,6 +20,14 @@ fn ctx() -> Context {
     }
 }
 
+fn ended(reason: EndReason) -> Command {
+    Command::UnitEnded {
+        reason,
+        detail: None,
+        stderr: None,
+    }
+}
+
 fn run(task: &str) -> RunAssignment {
     use crate::ids::{HireId, RoleId, RunId};
     use crate::model::{Effort, Vendor};
@@ -65,12 +73,8 @@ fn collection_during_a_lost_link_stays_unknown_until_its_real_end() {
         EndReason::Crashed,
         EndReason::ParseError,
     ] {
-        let (expected, _) = step(
-            TaskState::Collecting,
-            Command::UnitEnded(reason.clone()),
-            &c,
-        );
-        let (actual, events) = step(collected.clone(), Command::UnitEnded(reason), &c);
+        let (expected, _) = step(TaskState::Collecting, ended(reason.clone()), &c);
+        let (actual, events) = step(collected.clone(), ended(reason), &c);
         assert_eq!(actual, expected);
         assert!(events.iter().any(|event| {
             matches!(event, EventKind::TaskStateChanged { from, to, .. } if from == &collected && to == &expected)
@@ -90,7 +94,7 @@ fn collection_during_a_lost_link_stays_unknown_until_its_real_end() {
         TaskState::Unknown {
             last: Box::new(stopped.clone()),
         },
-        Command::UnitEnded(EndReason::Completed),
+        ended(EndReason::Completed),
         &c,
     );
     assert_eq!(actual, stopped);
@@ -176,7 +180,7 @@ fn the_happy_path_ends_done_with_no_ci() {
     assert_eq!(s, TaskState::Running);
     let (s, _) = step(s, Command::HeadWritten, &approved);
     assert_eq!(s, TaskState::Collecting);
-    let (s, _) = step(s, Command::UnitEnded(EndReason::Completed), &approved);
+    let (s, _) = step(s, ended(EndReason::Completed), &approved);
     assert_eq!(s, TaskState::Publishing);
     let (s, ev) = step(s, Command::Published, &approved);
     assert_eq!((&s, ev.len()), (&TaskState::Publishing, 0));
@@ -252,22 +256,14 @@ fn a_verdict_with_open_findings_never_merges() {
 
 #[test]
 fn a_run_that_ends_without_collecting_does_not_publish() {
-    let (s, ev) = step(
-        TaskState::Running,
-        Command::UnitEnded(EndReason::Completed),
-        &ctx(),
-    );
+    let (s, ev) = step(TaskState::Running, ended(EndReason::Completed), &ctx());
     assert!(matches!(s, TaskState::Failed { .. }));
     assert_eq!(ev.last().map(EventKind::kind), Some("task.failed"));
 }
 
 #[test]
 fn a_run_that_ends_badly_fails_the_task() {
-    let (s, ev) = step(
-        TaskState::Running,
-        Command::UnitEnded(EndReason::ParseError),
-        &ctx(),
-    );
+    let (s, ev) = step(TaskState::Running, ended(EndReason::ParseError), &ctx());
     assert!(matches!(s, TaskState::Failed { .. }));
     assert_eq!(ev.last().map(EventKind::kind), Some("task.failed"));
 }
@@ -517,7 +513,7 @@ fn no_observation_moves_a_stopped_task() {
     let observations = [
         Command::UnitActive,
         Command::HeadWritten,
-        Command::UnitEnded(EndReason::Crashed),
+        ended(EndReason::Crashed),
         Command::Published,
         Command::PrOpened,
         Command::ChecksObserved {
@@ -804,7 +800,7 @@ fn an_ended_task_never_moves() {
     for s in every_state().into_iter().filter(terminal) {
         for cmd in [
             Command::Start(built()),
-            Command::UnitEnded(EndReason::Completed),
+            ended(EndReason::Completed),
             Command::MergeDone,
             Command::Stop(None),
             Command::Resume(None),
@@ -830,11 +826,7 @@ fn a_crashed_run_retries_within_the_attempts_cap() {
         },
         ..approved()
     };
-    let (s, ev) = step(
-        TaskState::Running,
-        Command::UnitEnded(EndReason::Crashed),
-        &c,
-    );
+    let (s, ev) = step(TaskState::Running, ended(EndReason::Crashed), &c);
     assert_eq!(
         s,
         TaskState::RetryPending {
@@ -862,11 +854,7 @@ fn a_crashed_run_retries_within_the_attempts_cap() {
         },
         ..approved()
     };
-    let (s, _) = step(
-        TaskState::Running,
-        Command::UnitEnded(EndReason::Oom),
-        &spent,
-    );
+    let (s, _) = step(TaskState::Running, ended(EndReason::Oom), &spent);
     assert!(matches!(s, TaskState::Failed { ref reason } if reason.contains("out of memory")));
     let retry = TaskState::RetryPending {
         effect: Effect::StartUnit,
@@ -891,7 +879,7 @@ fn a_run_past_its_time_limit_retries_then_fails_naming_the_limit() {
         effect: Effect::StartUnit,
         attempt: 2,
     };
-    let ended = Command::UnitEnded(EndReason::TimeLimit);
+    let ended = ended(EndReason::TimeLimit);
     assert_eq!(step(TaskState::Running, ended.clone(), &c).0, retry);
     assert_eq!(step(TaskState::InReview, ended.clone(), &c).0, retry);
     let spent = Context {
@@ -916,11 +904,7 @@ fn a_run_past_its_time_limit_retries_then_fails_naming_the_limit() {
 
 #[test]
 fn a_run_stopped_from_outside_stops_the_task() {
-    let (s, _) = step(
-        TaskState::Running,
-        Command::UnitEnded(EndReason::Stopped),
-        &approved(),
-    );
+    let (s, _) = step(TaskState::Running, ended(EndReason::Stopped), &approved());
     assert_eq!(
         s,
         TaskState::Stopped {
@@ -933,7 +917,7 @@ fn a_run_stopped_from_outside_stops_the_task() {
 fn a_reviewer_that_ends_without_a_verdict_runs_again() {
     let (s, _) = step(
         TaskState::InReview,
-        Command::UnitEnded(EndReason::Completed),
+        ended(EndReason::Completed),
         &approved(),
     );
     assert!(matches!(
@@ -1273,7 +1257,7 @@ fn after_a_restart_a_task_in_flight_is_unknown_until_reconciled() {
     );
     // UnitEnded is a confirmed observation, so its actual end can settle the
     // task directly; a successful exit without collection fails as usual.
-    let (ended, _) = step(u, Command::UnitEnded(EndReason::Completed), &c);
+    let (ended, _) = step(u, ended(EndReason::Completed), &c);
     assert!(matches!(ended, S::Failed { .. }));
 }
 
@@ -1334,12 +1318,7 @@ fn a_task_stopped_by_the_review_cap_cannot_resume_its_review() {
 
 #[test]
 fn a_model_mismatch_fails_the_task_with_catalogue_wording() {
-    let ended = decide(
-        &TaskState::Running,
-        Command::UnitEnded(EndReason::Mismatch),
-        &approved(),
-    )
-    .unwrap();
+    let ended = decide(&TaskState::Running, ended(EndReason::Mismatch), &approved()).unwrap();
     assert!(ended.iter().any(|k| matches!(
         k,
         EventKind::TaskFailed { reason: Some(r), .. } if r.contains(crate::wording::text("end.mismatch"))

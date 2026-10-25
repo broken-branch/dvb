@@ -298,6 +298,7 @@ fn seeded(dir: &Path, gate: Arc<Gate>, state: TaskState, pr: bool) -> (AppState,
             run: dvb_core::RunId::new("b1"),
             reason: dvb_core::event::EndReason::Completed,
             detail: None,
+            stderr: None,
         },
         EventKind::BranchPublished {
             task: t.clone(),
@@ -334,6 +335,7 @@ fn seeded(dir: &Path, gate: Arc<Gate>, state: TaskState, pr: bool) -> (AppState,
             run: dvb_core::RunId::new("v1"),
             reason: dvb_core::event::EndReason::Completed,
             detail: None,
+            stderr: None,
         },
     ]);
     e.append_checked(Some(&p), Actor::Engine, |_, _| Ok(events))

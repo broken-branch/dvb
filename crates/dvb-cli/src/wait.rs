@@ -1,11 +1,11 @@
 //! `dvb wait`: block on one goal until its plan is asked, it is Done, one of
-//! its tasks fails or stops, or its plan is put on hold. The project's
-//! `goal.stated` and `question.opened` events tie questions to the goal's
-//! versions; `pr.merged` events give the merge commits.
+//! its tasks fails or stops, its plan is put on hold, or its project is
+//! paused. The project's `goal.stated` and `question.opened` events tie
+//! questions to the goal's versions; `pr.merged` events give the merge commits.
 use crate::client::CliError;
 use crate::client::WatchEvent;
 use crate::{Client, goal_line, goal_title, option_line, question_json, write_json, write_stdout};
-use dvb_core::api::{EventPageQuery, GoalState, GoalView, QuestionView, TaskView};
+use dvb_core::api::{EventPageQuery, GoalState, GoalView, ProjectView, QuestionView, TaskView};
 use dvb_core::event::LapsesOn;
 use dvb_core::{EventId, EventKind, GoalId, ProjectId, QuestionId, TaskId, TaskState};
 use serde_json::json;
@@ -21,22 +21,25 @@ pub enum Until {
 }
 
 pub const ERROR: i32 = 1;
-pub const QUESTION: i32 = 2;
+// 2 is clap's usage error (a missing or unknown argument), so no outcome uses it.
 pub const FAILED: i32 = 3;
 pub const TIMED_OUT: i32 = 4;
 pub const NO_GOAL: i32 = 5;
 pub const STOPPED: i32 = 6;
+pub const QUESTION: i32 = 7;
 
 pub const EXIT_CODES: &str = "Exit codes:
   0  --until done: the goal is Done (prints its merged pull requests and merge commits);
      --until plan: its plan question is open (prints the question), or its plan is already approved
   1  dvb could not read the engine (a refusal or an unreadable reply)
-  2  a question of this goal waits for you (prints its id, subject and options)
+  2  a usage error: a missing or unknown argument (nothing was checked)
   3  a task of this goal failed (prints the task id, reason and dvb retry <task>)
-  4  the timeout elapsed
+  4  the timeout elapsed; --timeout 0 checks once
   5  the goal does not exist or was dropped
-  6  a task of this goal is stopped (prints the task id, reason and dvb resume <task>),
-     or its plan is on hold (prints dvb resume <goal>)";
+  6  nothing goes on until you act: a task of this goal is stopped (prints the task id,
+     reason and dvb resume <task>), its plan is on hold (prints dvb resume <goal>), or
+     its project is paused (prints dvb resume <project>)
+  7  a question of this goal waits for you (prints its id, subject and options)";
 
 const KINDS: &str = "goal.stated,question.opened,pr.merged";
 
@@ -99,11 +102,14 @@ impl Seen {
         &self,
         g: &GoalView,
         until: Until,
+        project: Option<&ProjectView>,
         tasks: &[TaskView],
         questions: &[QuestionView],
     ) -> Option<End> {
+        let tasks: Vec<_> = tasks.iter().filter(|t| t.goal == g.id).collect();
+        let state = goal_state(g, &tasks);
         let end = |code, outcome, text: String, more: serde_json::Value| {
-            let mut json = json!({"outcome": outcome, "goal": g.id, "state": g.state});
+            let mut json = json!({"outcome": outcome, "goal": g.id, "state": state});
             if let (Some(json), serde_json::Value::Object(more)) = (json.as_object_mut(), more) {
                 json.extend(more);
             }
@@ -117,7 +123,6 @@ impl Seen {
                 json!({}),
             ));
         }
-        let tasks: Vec<_> = tasks.iter().filter(|t| t.goal == g.id).collect();
         let ids: BTreeSet<_> = tasks.iter().map(|t| &t.id).collect();
         let mut questions = questions
             .iter()
@@ -187,7 +192,7 @@ impl Seen {
             );
             return Some(end(STOPPED, "stopped", text, task(t, reason, "resume")));
         }
-        g.plan_parked.then(|| {
+        if g.plan_parked {
             let text = format!(
                 "Goal {}: {} - {}\nAsk it again: dvb resume {}\n",
                 g.id,
@@ -196,8 +201,29 @@ impl Seen {
                 g.id
             );
             let more = json!({"command": format!("dvb resume {}", g.id)});
-            end(STOPPED, "plan_parked", text, more)
+            return Some(end(STOPPED, "plan_parked", text, more));
+        }
+        project.filter(|p| p.paused).map(|p| {
+            let text = format!(
+                "Project {} is paused: nothing new starts until dvb resume {}\n",
+                p.name, p.name
+            );
+            let more = json!({"command": format!("dvb resume {}", p.name)});
+            end(STOPPED, "project_paused", text, more)
         })
+    }
+}
+
+/// The goal's state for `--json`: the engine's, except that a goal whose
+/// tasks ended with stopped ones and none failed is `stopped`, not `failed`.
+fn goal_state(g: &GoalView, tasks: &[&TaskView]) -> serde_json::Value {
+    let failed = tasks
+        .iter()
+        .any(|t| matches!(t.state, TaskState::Failed { .. }));
+    if g.state == GoalState::Failed && !failed {
+        json!("stopped")
+    } else {
+        json!(g.state)
     }
 }
 
@@ -305,7 +331,9 @@ async fn step(
     }
     let tasks: Vec<TaskView> = client.get(&format!("/tasks?project={project}")).await?;
     let questions: Vec<QuestionView> = client.get("/questions?open=true").await?;
-    Ok(seen.check(&g, until, &tasks, &questions))
+    let projects: Vec<ProjectView> = client.get("/projects").await?;
+    let project = projects.iter().find(|p| p.id == project);
+    Ok(seen.check(&g, until, project, &tasks, &questions))
 }
 
 async fn goal_view(client: &Client, goal: &GoalId) -> Result<Option<GoalView>, CliError> {
@@ -363,7 +391,7 @@ mod tests {
                         "state": serde_json::to_value(TaskState::Done).unwrap(),
                         "pr": 7, "head": "abc"
                     }]),
-                    "/questions" => json!([]),
+                    "/questions" | "/projects" => json!([]),
                     "/events" => {
                         idle.push(response);
                         continue;
@@ -401,7 +429,7 @@ mod tests {
                     "/events/recent" => {
                         json!({"cursor": 3, "events": [], "before": null, "activity": []})
                     }
-                    "/tasks" | "/questions" => json!([]),
+                    "/tasks" | "/questions" | "/projects" => json!([]),
                     // The event stream never delivers anything.
                     "/events" => {
                         idle.push(response);

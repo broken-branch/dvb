@@ -400,6 +400,36 @@ fn goal_events(e: &AppState) -> usize {
 }
 
 #[tokio::test]
+async fn owner_refusal_keeps_raw_untrusted_title_out_of_runs_and_prompts() {
+    let f = fixture();
+    let title = format!("Outsider title ghp_{}", "a".repeat(30));
+    f.fake.set_issue(
+        &f.repo(),
+        titled(issue(6, "mallory", Association::None, UNTRUSTED), &title),
+    );
+
+    let (status, body) = f.owner_goal(json!([6])).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "ISSUE_UNTRUSTED");
+    assert_eq!(
+        body["detail"],
+        format!(
+            "issue #6 \"{title}\" (https://github.com/org/repo/issues/6) is untrusted: \
+             it was not opened by the owner, a member or a collaborator"
+        )
+    );
+
+    let detail = untrusted_code(f.read(6).await, 6);
+    assert!(!detail.contains(&title), "{detail}");
+    let (wire, _) = f.run_issues().await;
+    assert!(!wire.contains(&title), "{wire}");
+    f.mention("raw-title", "Fix #6.");
+    let summary = f.orchestrator_summary().await;
+    assert!(summary.contains("Issue #6 (https://github.com/org/repo/issues/6) is untrusted"));
+    assert!(!summary.contains(&title), "{summary}");
+}
+
+#[tokio::test]
 async fn goals_from_issues_carry_fenced_trusted_text_and_refuse_untrusted_issues() {
     let f = fixture();
     let before = goal_events(&f.e);

@@ -17,7 +17,7 @@ use dvb_core::event::GoalIssue;
 use dvb_core::forge::{Association, Issue, IssueError, IssueState, IssueSummary, Repo, Visibility};
 use dvb_core::run_verbs::{IssueCommentReply, IssueReply, IssuesReply, ListedIssue};
 use dvb_core::{ProjectId, Refusal, RefusalCode};
-use dvb_forge::scan::ScanPolicy;
+use dvb_forge::scan::scrub;
 
 /// Issue content kept in one prompt; `dvb run issue` reads the rest.
 const MAX_CONTENT_BYTES: usize = 64 * 1024;
@@ -86,23 +86,11 @@ fn keep_trusted(mut issue: Issue, visibility: Visibility) -> Trusted {
     }
 }
 
-/// Lines the outbound secret scan matches are replaced, never passed on. The
-/// owner's own runs and the owner read it, so the owner's name and email stay.
-fn scrub(text: &str) -> String {
-    text.lines()
-        .map(|line| match ScanPolicy::default().scan("issue", line) {
-            Some(hit) => format!("[line withheld by dvb's secret scan: {}]", hit.rule),
-            None => line.to_owned(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// The refusal of an untrusted issue: the owner's names its title, a run's
 /// only its number and link.
 fn untrusted(issue: &Issue, reader: Reader) -> Fail {
     let title = match reader {
-        Reader::Owner => format!(" \"{}\"", scrub(&issue.title.replace(['\r', '\n'], " "))),
+        Reader::Owner => format!(" \"{}\"", issue.title),
         Reader::Run => String::new(),
     };
     Refusal::new(

@@ -933,6 +933,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_what_next_subject_ends_with_the_goal_text_alone() {
+        // A goal's text usually ends with its own period.
+        let vars = [("goal_text", "Show the build version.".to_owned())];
+        let script: serde_json::Value = serde_json::from_str(&crate::prompt::render(
+            super::Wake::GoalDone.script(),
+            &vars,
+            true,
+        ))
+        .unwrap();
+        assert_eq!(
+            script[0]["run"][1]["subject"],
+            "What next? Done: Show the build version."
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -967,6 +983,7 @@ mod tests {
                 run: assignment.run.clone(),
                 reason: EndReason::Crashed,
                 detail: None,
+                stderr: None,
             },
         ];
         let events = |kinds: &[EventKind]| {

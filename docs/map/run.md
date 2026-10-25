@@ -12,7 +12,8 @@ single executable; installation and scripts package and exercise it.
   toolchain install and collection.
 - `crates/dvb-run/src/preflight.rs`: environment checks and fix hints.
 - `crates/dvb-run/src/claude.rs`, `codex.rs`, `fake.rs`: provider implementations.
-- `crates/dvb-run/src/stream.rs`, `usage.rs`, `child.rs`: output, tokens and children.
+- `crates/dvb-run/src/stream.rs`, `usage.rs`, `child.rs`: output, the CLI's stderr tail,
+  tokens and children.
 - `crates/dvb-run/src/client.rs`, `verb.rs`, `login.rs`: run API and vendor login.
 - `install/install.sh`: prerequisites, users, paths and units; see
   [installation details](../install.md).

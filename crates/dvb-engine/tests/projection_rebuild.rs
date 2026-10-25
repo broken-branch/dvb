@@ -81,6 +81,7 @@ fn an_orchestrator_run_before_planning_is_rebuilt() {
                 run: RunId::new("r1"),
                 reason: EndReason::Completed,
                 detail: None,
+                stderr: None,
             },
         ),
     ]);
@@ -648,6 +649,7 @@ fn current_run_updates_only_for_the_latest_assignment() {
                 run: RunId::new("old"),
                 reason: EndReason::Completed,
                 detail: None,
+                stderr: None,
             },
         ),
         (
@@ -656,6 +658,7 @@ fn current_run_updates_only_for_the_latest_assignment() {
                 run: RunId::new("new"),
                 reason: EndReason::Completed,
                 detail: None,
+                stderr: None,
             },
         ),
     ]);

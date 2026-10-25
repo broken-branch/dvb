@@ -5,7 +5,7 @@ use super::runs::{
 use super::{Next, read, slot_free, still};
 use crate::engine::{AppState, Fail};
 use crate::proj::{Project, Task};
-use crate::publish;
+use crate::publish::{self, without_run_ids};
 use dvb_core::forge::{PrState, Repo};
 use dvb_core::git::Git;
 use dvb_core::state::Effect;
@@ -306,10 +306,11 @@ pub(super) async fn publish(e: &AppState, t: &Task, p: &Project) -> Result<Next,
 
 /// The task's title as its PR (and its squash merge) carries it.
 pub(super) fn pr_title(t: &Task) -> String {
+    let title = without_run_ids(&t.view.title);
     if t.view.outcome == dvb_core::run_verbs::BuilderOutcome::Complete {
-        t.view.title.clone()
+        title.into_owned()
     } else {
-        super::outcomes::references_only(&t.view.title)
+        super::outcomes::references_only(&title)
     }
 }
 
@@ -322,7 +323,7 @@ pub(super) fn pr_body(
 ) -> String {
     let ids = format!("Task {task}, round {round}, built by run {run}.{issues}");
     match summary.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(summary) => format!("{summary}\n\n{ids}"),
+        Some(summary) => format!("{}\n\n{ids}", without_run_ids(summary)),
         None => ids,
     }
 }

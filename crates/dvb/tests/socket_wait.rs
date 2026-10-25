@@ -29,8 +29,9 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// Project `p`, paused, with goals `g` and `other`, each planned with one task
-    /// (`g-task`, `other-task`) and approved unless `approved` is false.
+    /// Project `p` with goals `g` and `other`, each planned with one task
+    /// (`g-task`, `other-task`) and approved unless `approved` is false. The
+    /// project has no roles, so nothing starts; a paused project ends a wait.
     fn new(approved: bool) -> Fixture {
         let tmp = tempfile::Builder::new()
             .prefix("dvbwait")
@@ -42,16 +43,13 @@ impl Fixture {
             Default::default(),
         )
         .unwrap();
-        let mut seed = vec![
-            EventKind::ProjectAdded {
-                id: ProjectId::new("p"),
-                name: "p".into(),
-                repo: "/nowhere".into(),
-                default_branch: "main".into(),
-                ci: CiMode::NoCi,
-            },
-            EventKind::ProjectPaused {},
-        ];
+        let mut seed = vec![EventKind::ProjectAdded {
+            id: ProjectId::new("p"),
+            name: "p".into(),
+            repo: "/nowhere".into(),
+            default_branch: "main".into(),
+            ci: CiMode::NoCi,
+        }];
         for goal in ["g", "other"] {
             seed.extend([
                 EventKind::GoalStated {
@@ -211,7 +209,7 @@ async fn until_plan_returns_the_plan_question_with_its_id_and_options() {
         serde_json::json!({"id": 1, "text": "Approve", "effect": "Start the tasks"})
     );
     // Waiting for Done, the plan question is a question of the goal.
-    assert_eq!(wait(&f.sock, &["g"]), (2, PLAN.into()));
+    assert_eq!(wait(&f.sock, &["g"]), (7, PLAN.into()));
     // The owner's yes closes the question: the plan is no longer asked.
     let _: serde_json::Value = Client::new(f.sock.clone())
         .post(
@@ -266,14 +264,23 @@ async fn done_exits_0_with_the_goal_s_merged_pull_requests() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_question_of_the_goal_exits_2_and_one_of_another_goal_does_not() {
+async fn a_question_of_the_goal_exits_7_and_one_of_another_goal_does_not() {
     let f = Fixture::new(true);
     let _serving = f.serve().await;
     f.append(vec![f.question("q-other", "other", false)]);
     assert_eq!(wait(&f.sock, &["g", "--timeout", "0"]), (4, String::new()));
     let waiting = spawn(&f.sock, &["g"]);
     f.append(vec![f.question("q-plan", "g", false)]);
-    assert_eq!(result(&waiting.await.unwrap()), (2, PLAN.into()));
+    assert_eq!(result(&waiting.await.unwrap()), (7, PLAN.into()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_usage_error_alone_exits_2() {
+    let out = Command::new(env!("CARGO_BIN_EXE_dvb"))
+        .arg("wait")
+        .output()
+        .unwrap();
+    assert_eq!(result(&out), (2, String::new()));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -334,11 +341,50 @@ async fn a_stopped_task_of_the_goal_exits_6_with_its_resume_command() {
     assert_eq!(code, 6);
     let json: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(json["outcome"], "stopped", "{json}");
+    // Its only task ended stopped: the goal has not failed.
+    assert_eq!(json["state"], "stopped", "{json}");
     assert_eq!(
         json["task"],
         serde_json::json!({"id": "g-task", "title": "Build", "reason": "not before Monday",
                            "command": "dvb resume g-task"})
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_paused_project_exits_6_and_needs_you_with_dvb_resume_project() {
+    let f = Fixture::new(false);
+    let _serving = f.serve().await;
+    assert_eq!(wait(&f.sock, &["g", "--timeout", "0"]), (4, String::new()));
+    let waiting = spawn(&f.sock, &["g", "--until", "plan"]);
+    f.append(vec![EventKind::ProjectPaused {}]);
+    let paused = "Project p is paused: nothing new starts until dvb resume p\n";
+    assert_eq!(result(&waiting.await.unwrap()), (6, paused.into()));
+    let (code, json) = wait(&f.sock, &["g", "--json"]);
+    assert_eq!(code, 6);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&json).unwrap(),
+        serde_json::json!({
+            "outcome": "project_paused", "goal": "g", "state": "stated",
+            "command": "dvb resume p",
+        })
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_dvb"))
+        .arg("--sock")
+        .arg(&f.sock)
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        status["needs_you_items"],
+        serde_json::json!([{
+            "kind": "project", "id": "p", "project": "p", "project_name": "p",
+            "title": "p", "command": "dvb resume p",
+        }])
+    );
+    // A question of the goal is printed before the pause.
+    f.append(vec![f.question("q-plan", "g", false)]);
+    assert_eq!(wait(&f.sock, &["g"]), (7, PLAN.into()));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -372,13 +418,46 @@ async fn a_plan_on_hold_exits_6_and_needs_you_with_dvb_resume_goal() {
         .output()
         .unwrap();
     let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    // The engine asks about the other goal's saved plan on its own.
+    let items = status["needs_you_items"].as_array().unwrap();
     assert_eq!(
-        status["needs_you_items"],
-        serde_json::json!([{
+        items.iter().find(|i| i["id"] == "g"),
+        Some(&serde_json::json!({
             "kind": "plan", "id": "g", "project": "p", "project_name": "p",
             "title": "Work", "command": "dvb resume g",
-        }])
+        })),
+        "{status}"
     );
+    // Resuming asks the plan again under a new id, which --json gives.
+    let out = Command::new(env!("CARGO_BIN_EXE_dvb"))
+        .arg("--sock")
+        .arg(&f.sock)
+        .args(["resume", "g", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let resumed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let again = resumed["question"]["id"].as_str().unwrap().to_owned();
+    assert_ne!(again, "q-plan");
+    assert_eq!(
+        resumed,
+        serde_json::json!({
+            "goal": {"id": "g", "project": "p", "text": "Work", "state": "stated",
+                     "plan_parked": false},
+            "question": {
+                "id": again, "project": "p", "goal": "g", "task": null,
+                "subject": "Approve the plan?", "recommended": 1,
+                "options": [
+                    {"id": 1, "text": "Approve", "effect": "Start the tasks"},
+                    {"id": 2, "text": "Not yet", "effect": "Hold the plan"},
+                ],
+            },
+        })
+    );
+    let (code, json) = wait(&f.sock, &["g", "--until", "plan", "--json"]);
+    assert_eq!(code, 0);
+    let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(json["question"]["id"], again.as_str(), "{json}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

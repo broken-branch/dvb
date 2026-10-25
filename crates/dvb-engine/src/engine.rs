@@ -1138,7 +1138,9 @@ impl Engine {
         driver: Option<EndReason>,
     ) -> Result<(), Fail> {
         // Read before the projections are held.
-        let cause = crate::launch::driver_cause(&self.cfg.paths.work.join(run.as_str()));
+        let dir = self.cfg.paths.work.join(run.as_str());
+        let cause = crate::launch::driver_cause(&dir);
+        let stderr = crate::launch::driver_stderr(&dir);
         let proj = self.proj();
         let Some(r) = proj.runs.get(run).cloned() else {
             return Err(Fail::NotFound(format!("run {run}")));
@@ -1208,14 +1210,22 @@ impl Engine {
         } else {
             reason
         };
+        let crashed = reason == EndReason::Crashed;
+        let detail = cause.filter(|_| crashed);
+        let stderr = stderr.filter(|_| crashed);
         let ended = EventKind::RunEnded {
             run: run.clone(),
             reason: reason.clone(),
-            detail: cause.filter(|_| reason == EndReason::Crashed),
+            detail: detail.clone(),
+            stderr: stderr.clone(),
         };
         let result = match current.filter(|_| !verdict_given) {
             Some(task) => {
-                let cmd = Command::UnitEnded(reason);
+                let cmd = Command::UnitEnded {
+                    reason,
+                    detail,
+                    stderr,
+                };
                 self.decide(
                     proj,
                     &task,

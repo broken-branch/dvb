@@ -170,6 +170,7 @@ impl Fixture {
             run,
             reason: EndReason::Completed,
             detail: None,
+            stderr: None,
         });
         self.e
             .append_checked(Some(&ProjectId::new("p")), Actor::Engine, |_, _| Ok(events))
@@ -803,6 +804,7 @@ fn clean_review(f: &Fixture) {
                 run: RunId::new("review"),
                 reason: EndReason::Completed,
                 detail: None,
+                stderr: None,
             },
             EventKind::TaskStateChanged {
                 task,
@@ -1630,7 +1632,7 @@ async fn hit_sent_back(f: &Fixture) -> RunId {
 }
 
 #[tokio::test]
-async fn a_run_work_dir_in_the_builders_file_goes_back_for_a_scan_fix() {
+async fn a_run_work_dir_publishes_and_the_pr_body_shows_no_run_id() {
     let f = fixture().await;
     let task = TaskId::new("t");
     let (roles, hires) = support::events::default_role_hire_events();
@@ -1640,21 +1642,24 @@ async fn a_run_work_dir_in_the_builders_file_goes_back_for_a_scan_fix() {
     .unwrap();
     let run = "01M59VRF3PQDEY1AQYY29F3TS6";
     let cache = format!("/var/lib/dvb/work/{run}/ws/node_modules/.cache/file\n");
-    f.collect_files("b1", &f.base, Some("Built."), &[("cache.txt", &cache)]);
+    let summary = format!("Built in /var/lib/dvb/work/{run}/ws.");
+    f.collect_files("b1", &f.base, Some(&summary), &[("cache.txt", &cache)]);
     dispatch::step_now(&f.e, &task).await.unwrap();
     let t = f.e.proj().tasks[&task].clone();
-    assert_eq!(t.view.state, TaskState::Preparing);
-    assert_eq!(
-        scan_hits(&f),
-        [("cache.txt".into(), 1, "run-work-dir".into())]
+    assert_eq!(t.view.state, TaskState::InReview);
+    assert!(scan_hits(&f).is_empty());
+    assert_eq!(forge_writes(&f), ["push", "open_pr"]);
+    let body = f.fake.pr_body(&f.repo, 1).unwrap();
+    assert!(
+        body.starts_with("Built in /var/lib/dvb/work/<run>/ws."),
+        "{body}"
     );
-    assert!(forge_writes(&f).is_empty());
-    let fix = t.facts.builder.unwrap();
-    assert_ne!(fix, RunId::new("b1"));
-    assert_eq!(
-        f.e.proj().runs[&fix].assignment.reason,
-        "Fix the publish scan hit."
+    let head = t.view.head.unwrap();
+    let pushed = git(
+        &f.e.mirror("project"),
+        &["show", &format!("{head}:cache.txt")],
     );
+    assert_eq!(pushed, cache.trim_end());
 }
 
 #[tokio::test]
