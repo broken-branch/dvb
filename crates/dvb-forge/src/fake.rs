@@ -42,6 +42,7 @@ struct RepoState {
     created_id: Option<u64>,
     /// The repository's id, given when it is first asked for.
     id: Option<u64>,
+    board: bool,
     goals: BTreeMap<String, (u64, dvb_core::forge::GoalMirror)>,
     cards: BTreeMap<String, dvb_core::forge::TaskMirror>,
 }
@@ -262,6 +263,16 @@ impl FakeForge {
         self.with(repo, |r| r.ruleset = ruleset);
     }
 
+    pub fn boards(&self) -> Vec<Repo> {
+        self.repos
+            .lock()
+            .unwrap_or_else(dvb_core::sync::recover)
+            .iter()
+            .filter(|(_, state)| state.board)
+            .map(|(repo, _)| repo.clone())
+            .collect()
+    }
+
     pub fn milestones(&self, repo: &Repo) -> Vec<(u64, dvb_core::forge::GoalMirror)> {
         self.with(repo, |r| r.goals.values().cloned().collect())
     }
@@ -367,7 +378,7 @@ impl Forge for FakeForge {
     async fn mirror_project(&self, repo: &Repo) -> Result<(), ForgeError> {
         self.request("mirror_project")?;
         self.reached(repo)?;
-        self.with(repo, |_| ());
+        self.with(repo, |r| r.board = true);
         Ok(())
     }
     async fn mirror_goal(

@@ -30,8 +30,12 @@ Paths below are under `crates/dvb-engine/src/`.
   Templates and shared verb/browser instructions live in `prompts/`.
 - `publish/mod.rs`, `project.rs`: neutral commits, scanning, the publication identity and
   project setup.
-- `publish/reconcile.rs`, `mirror.rs`: checks, merges, cleanup and board repair;
-  the mirror pass also calls `wake::on_new_issue` for each project.
+- `publish/reconcile.rs`, `mirror.rs`: checks, merges, cleanup and the board mirror,
+  which sends only items changed since their `github.mirror_sent` receipt;
+  the mirror pass also calls `wake::on_new_issue` for each project. It takes
+  the mirror lock per project and goal job; `mirror::lock_for_change` is how a
+  project's remove or repoint waits for that job, and `/status` shows the
+  running pass.
 - `vendors.rs`, `only.rs`, `usage/`: vendor limits, timed selection and accounting.
 - `units.rs`: systemd D-Bus unit control and the dev process launcher.
 - `update/`: signed downloads, bounded drain/handover, update-stop recovery receipts,

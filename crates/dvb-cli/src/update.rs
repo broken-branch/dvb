@@ -185,8 +185,9 @@ fn drain_text(runs: u32) -> String {
     if runs == 0 {
         "Restarting dvb\n".into()
     } else {
+        let seconds = dvb_engine::update::protocol::DRAIN_MILLIS / 1_000;
         format!(
-            "Waiting up to 30 s for {runs} runs to finish; remaining task runs will be stopped and resumed after the restart\n"
+            "Waiting up to {seconds} s for {runs} runs to finish; remaining task runs will be stopped and resumed after the restart\n"
         )
     }
 }
@@ -194,9 +195,9 @@ fn drain_text(runs: u32) -> String {
 fn completion_text(completed: Option<&dvb_core::api::UpdateCompletion>) -> String {
     match completed {
         Some(c) if c.stopped == 0 => "Every task run finished before the restart\n".into(),
-        Some(c) if c.stopped == c.resumed => format!(
-            "{} task runs were stopped and resumed after the restart\n",
-            c.resumed
+        Some(c) if c.stopped == c.resumed.saturating_add(c.pending) => format!(
+            "{} task runs were stopped and resume automatically; see `dvb status` for the tasks\n",
+            c.stopped
         ),
         Some(c) => format!(
             "{} task runs were stopped; {} resumed after the restart; {} pending automatic resume; {} changed while stopped\n",
@@ -234,10 +235,12 @@ mod tests {
             (false, 0, 0, 0),
             (false, 2, 2, 0),
             (false, 2, 0, 2),
+            (false, 2, 1, 1),
             (false, 3, 1, 1),
             (true, 0, 0, 0),
             (true, 2, 2, 0),
             (true, 2, 0, 2),
+            (true, 2, 1, 1),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let sock = dir.path().join("engine.sock");
@@ -298,11 +301,12 @@ mod tests {
                     output.contains("Every task run finished before the restart"),
                     "{output}"
                 );
-            } else if resumed == stopped {
+            } else if stopped == resumed + pending {
                 assert!(
-                    output.contains("2 task runs were stopped and resumed after the restart"),
+                    output.contains("2 task runs were stopped and resume automatically"),
                     "{output}"
                 );
+                assert!(output.contains("dvb status"), "{output}");
             } else {
                 assert!(output.contains(&format!("{stopped} task runs were stopped; {resumed} resumed after the restart; {pending} pending automatic resume")), "{output}");
                 if stopped > resumed + pending {

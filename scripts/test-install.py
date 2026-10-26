@@ -535,7 +535,7 @@ def check_release_workflow():
     assert gate in publish.splitlines()
     assert f'    needs: {signing[0]}' in publish.splitlines()
     assert '          name: release' in publish.splitlines()
-    assert '--repo broken-branch/dvb' in publish
+    assert '--repo "$GITHUB_REPOSITORY"' in publish
     return 1
 
 

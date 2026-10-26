@@ -52,6 +52,18 @@ pub struct Status {
     /// The failed or stopped tasks `needs_you` counts, one each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<NeedsYouTask>,
+    /// The GitHub mirror pass running now; absent between passes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirror_pass: Option<MirrorPass>,
+}
+
+/// A GitHub mirror pass: when it started and whose job it runs now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MirrorPass {
+    pub started: Timestamp,
+    /// Absent between two jobs of the pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectId>,
 }
 
 /// A failed or stopped task waiting on the owner.

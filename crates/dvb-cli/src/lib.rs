@@ -567,8 +567,8 @@ pub enum ProjectVerb {
         #[arg(long)]
         json: bool,
     },
-    /// Point the project at its repository's new name after a rename or
-    /// transfer: the same repository, checked by its GitHub id.
+    /// Point the project at its repository's new name after a rename:
+    /// the same repository, checked by its GitHub id.
     Repo { project: String, repo: String },
     /// Remove a project from dvb and free its files on this machine (work
     /// directories, mirror, toolchain cache, GitHub mirror receipts). Refused
@@ -1872,6 +1872,17 @@ fn status_text(v: &StatusView) -> String {
     for name in &s.rulesets_missing {
         out.push_str(&format!("Warning: {name}: {}\n", ruleset_missing_text()));
     }
+    if let Some(pass) = &s.mirror_pass {
+        let on = pass
+            .project
+            .as_ref()
+            .map(|id| format!(", on project {}", v.project_name(id)))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "GitHub mirror pass running since {}{on}\n",
+            local_time(pass.started)
+        ));
+    }
     if let Some(only) = &v.only {
         out.push_str(&format!("{}\n", only_line(only)));
     }
@@ -1956,6 +1967,11 @@ fn status_json(v: &StatusView) -> Result<serde_json::Value, CliError> {
             }))
             .collect::<Vec<_>>(),
         "only": v.only,
+        "mirror_pass": s.mirror_pass.as_ref().map(|pass| json!({
+            "started": pass.started,
+            "project": pass.project,
+            "project_name": pass.project.as_ref().map(|id| v.project_name(id)),
+        })),
         "questions": v.in_scope().map(question_json).collect::<Vec<_>>(),
     });
     let mut items = Vec::new();
@@ -2239,6 +2255,47 @@ mod tests {
     use super::*;
     use dvb_core::api::{CommitIdentity, UsageRow, VendorWindow};
     use dvb_core::{ProjectId, RoleId, Timestamp, Vendor};
+
+    #[test]
+    fn status_names_the_running_mirror_pass_and_its_project() {
+        let project: ProjectView = serde_json::from_value(serde_json::json!({
+            "id": "01M4", "name": "example", "repo": "org/example",
+            "default_branch": "main", "ci": "no_ci", "paused": false,
+        }))
+        .unwrap();
+        let started = Timestamp(1_791_990_000_000);
+        let view = StatusView {
+            status: Status {
+                running: 0,
+                needs_you: 0,
+                warnings: vec![],
+                rulesets_missing: vec![],
+                tasks: vec![],
+                mirror_pass: Some(dvb_core::api::MirrorPass {
+                    started,
+                    project: Some(ProjectId::new("01M4")),
+                }),
+            },
+            only: None,
+            listing: None,
+            questions: vec![],
+            parked: vec![],
+            paused: vec![],
+            projects: vec![project],
+        };
+        assert!(
+            status_text(&view).contains(&format!(
+                "GitHub mirror pass running since {}, on project example\n",
+                local_time(started)
+            )),
+            "{}",
+            status_text(&view)
+        );
+        assert_eq!(
+            status_json(&view).unwrap()["mirror_pass"],
+            serde_json::json!({"started": 1_791_990_000_000_i64, "project": "01M4", "project_name": "example"})
+        );
+    }
 
     #[test]
     fn watch_answers_limits_and_preflight_use_plain_words() {

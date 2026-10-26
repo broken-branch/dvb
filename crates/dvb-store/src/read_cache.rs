@@ -285,7 +285,7 @@ fn index_event<'a>(conn: &Connection, e: &'a Event) -> Result<Scope<'a>, StoreEr
         | GoalDropped { goal }
         | GoalAfterSet { goal, .. }
         | GoalIssueClosed { goal, .. } => scope.goal = Some(goal),
-        GithubMirrorObserved { goal, task, .. } => {
+        GithubMirrorObserved { goal, task, .. } | GithubMirrorSent { goal, task, .. } => {
             scope.goal = Some(goal);
             scope.task = task.as_ref();
         }

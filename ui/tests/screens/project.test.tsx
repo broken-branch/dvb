@@ -953,6 +953,9 @@ describe('remove project', () => {
       await user.click(remove);
       const dialog = screen.getByRole('dialog', { name: 'Remove Harbour?' });
       expect(dialog).toHaveAccessibleDescription(/^Harbour \(example-org\/harbour\) leaves dvb/);
+      expect(dialog).toHaveAccessibleDescription(
+        /Stopped tasks' unpublished work on this computer is deleted\.$/,
+      );
       if (dismissal === 'Escape') await user.keyboard('{Escape}');
       else await user.click(within(dialog).getByRole('button', { name: dismissal }));
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();

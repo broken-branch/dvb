@@ -460,7 +460,8 @@ function RemoveProject({ project }: { project: Project }) {
           </DialogHeader>
           <p id="remove-project">
             {project.name} ({project.repo}) leaves dvb on this computer. Its earlier activity stays
-            in the record and nothing changes on GitHub.
+            in the record and nothing changes on GitHub. Stopped tasks' unpublished work on this
+            computer is deleted.
           </p>
           <DataError message={action.error} />
           <div className="actions">

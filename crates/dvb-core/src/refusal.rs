@@ -78,6 +78,9 @@ pub enum RefusalCode {
     ProjectBusy {
         tasks: Vec<crate::TaskId>,
     },
+    /// A project's remove or repoint waited too long for the GitHub mirror
+    /// pass and changed nothing; the detail says when the pass started.
+    MirrorPassRunning,
 }
 
 impl RefusalCode {
@@ -125,7 +128,8 @@ impl RefusalCode {
             | RefusalCode::GoalStarted
             | RefusalCode::GoalOrderCycle
             | RefusalCode::RepositoryMismatch
-            | RefusalCode::ProjectBusy { .. } => 409,
+            | RefusalCode::ProjectBusy { .. }
+            | RefusalCode::MirrorPassRunning => 409,
         }
     }
 }

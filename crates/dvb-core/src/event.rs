@@ -518,6 +518,15 @@ event_kinds! {
             mirrored: bool,
             detail: Option<String>,
         },
+        /// The mirror's receipt for a goal's milestone or a task's card: the
+        /// digest of what GitHub confirmed, or none after a failed send, so
+        /// the next pass sends it again. A goal's carries its milestone number.
+        GithubMirrorSent => "github.mirror_sent" {
+            goal: GoalId,
+            task: Option<TaskId>,
+            digest: Option<String>,
+            milestone: Option<u64>,
+        },
 
         QuestionOpened => "question.opened" {
             #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -874,6 +883,7 @@ impl EventKind {
             | Self::HireRetired(..)
             | Self::SettingsChanged { .. }
             | Self::GithubMirrorObserved { .. }
+            | Self::GithubMirrorSent { .. }
             | Self::DecisionRecorded { .. }
             | Self::CommandRefused(..)
             | Self::OnlyStarted(..)
@@ -902,6 +912,7 @@ impl EventKind {
             | Self::RunSurvivedRestart { .. }
             | Self::RunEnded { .. }
             | Self::RunRerouted { .. }
+            | Self::GithubMirrorSent { .. }
             | Self::ChecksPending { .. } => true,
 
             Self::EngineStarted { .. }

@@ -1,4 +1,7 @@
-//! Mirror snapshots on startup and authoritative changes, with periodic repair. GitHub observations never enter projections.
+//! Mirror snapshots on startup and authoritative changes, with periodic passes.
+//! A milestone or card is sent only when it differs from its last receipt
+//! (`github.mirror_sent`), so manual board edits stay until the item changes.
+//! GitHub observations never enter projections.
 use super::without_run_ids;
 use crate::{AppState, Fail};
 use dvb_core::api::GoalState;
@@ -27,17 +30,10 @@ struct Retry {
     next: Timestamp,
 }
 
-#[derive(PartialEq, Eq)]
-struct FinishedGoal {
-    input: MirrorInput,
-    tasks: Vec<(TaskId, TaskMirror)>,
-}
-
-/// In-memory effect retries; startup still repairs every mirror once.
+/// In-memory effect retries; the receipts of what was sent are durable events.
 #[derive(Default)]
 pub(crate) struct Retries {
     pending: BTreeMap<MirrorKey, Retry>,
-    completed: BTreeMap<GoalId, FinishedGoal>,
 }
 
 impl Retries {
@@ -115,11 +111,81 @@ pub fn board_state(state: &TaskState) -> BoardState {
 /// A goal's milestone, or one of its task's board items.
 type Item = (ProjectId, GoalId, Option<TaskId>);
 
+/// What GitHub confirmed for an item: its digest, and a goal's milestone.
+struct Receipt {
+    digest: String,
+    milestone: Option<u64>,
+}
+
 #[derive(Default)]
 struct Observations {
     items: BTreeMap<Item, (bool, Option<String>)>,
     /// Projects told that GitHub reaches no repository by their saved name.
     unreachable: BTreeSet<ProjectId>,
+    /// The confirmed receipts; an item whose last send failed has none.
+    sent: BTreeMap<Item, Receipt>,
+}
+
+/// The digest of the fields an item sends. The repository's name is left
+/// out: a repoint keeps the same repository and moves its mirror with it.
+fn digest(fields: &[&str]) -> String {
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
+    for field in fields {
+        hash.update(u64::try_from(field.len()).unwrap_or(u64::MAX).to_le_bytes());
+        hash.update(field.as_bytes());
+    }
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn goal_digest(goal: &GoalMirror) -> String {
+    digest(&[
+        "goal",
+        &goal.key,
+        &goal.title,
+        &goal.description,
+        if goal.done { "closed" } else { "open" },
+    ])
+}
+
+fn task_digest(task: &TaskMirror) -> String {
+    digest(&[
+        "task",
+        &task.key,
+        &task.title,
+        &task.role,
+        &task.model,
+        task.state.label(),
+        &task.pr.map(|pr| pr.to_string()).unwrap_or_default(),
+        &task.milestone.to_string(),
+    ])
+}
+
+/// Records what GitHub confirmed for the item, or, after a failed send, that
+/// its last receipt no longer holds.
+fn receipt(
+    e: &AppState,
+    observations: &mut Observations,
+    item: Item,
+    sent: Option<Receipt>,
+) -> Result<(), Fail> {
+    if sent.is_none() && !observations.sent.contains_key(&item) {
+        return Ok(());
+    }
+    let (project, goal, task) = item.clone();
+    e.append_checked(Some(&project), Actor::Engine, |_, _| {
+        Ok(vec![EventKind::GithubMirrorSent {
+            goal: goal.clone(),
+            task: task.clone(),
+            digest: sent.as_ref().map(|r| r.digest.clone()),
+            milestone: sent.as_ref().and_then(|r| r.milestone),
+        }])
+    })?;
+    match sent {
+        Some(sent) => observations.sent.insert(item, sent),
+        None => observations.sent.remove(&item),
+    };
+    Ok(())
 }
 
 /// Each repository's visibility, read once per pass.
@@ -188,11 +254,73 @@ fn observed(
     Ok(())
 }
 
-fn unpaused(e: &AppState, project: &ProjectId) -> bool {
+/// The project is still there under the snapshot's repository and not paused.
+/// Checked under the mirror lock, so a project removed or repointed after the
+/// snapshot gets no receipt or event.
+fn mirrorable(e: &AppState, project: &ProjectId, repo: &Repo) -> bool {
     e.proj()
         .projects
         .get(project)
-        .is_some_and(|p| !p.view.paused)
+        .is_some_and(|p| !p.view.paused && p.view.repo == repo.0)
+}
+
+/// Takes the mirror lock for one job and marks the pass as on its project.
+async fn job<'a>(e: &'a AppState, project: &ProjectId) -> tokio::sync::MutexGuard<'a, Retries> {
+    let retries = e.mirror_retries.lock().await;
+    if let Some(pass) = e
+        .mirror_pass
+        .lock()
+        .unwrap_or_else(dvb_core::sync::recover)
+        .as_mut()
+    {
+        pass.project = Some(project.clone());
+    }
+    retries
+}
+
+/// How long a project's remove or repoint waits for the running job; well
+/// inside the CLI's request timeout.
+const PROJECT_CHANGE_WAIT: Duration = Duration::from_secs(10);
+
+/// The mirror lock for removing or repointing a project, or a refusal that
+/// names the pass it waited for: nothing has changed yet when it is refused.
+pub(crate) async fn lock_for_change<'a>(
+    e: &'a AppState,
+    project: &ProjectId,
+    command: &str,
+) -> Result<tokio::sync::MutexGuard<'a, Retries>, Fail> {
+    if let Ok(retries) = tokio::time::timeout(PROJECT_CHANGE_WAIT, e.mirror_retries.lock()).await {
+        return Ok(retries);
+    }
+    let pass = e
+        .mirror_pass
+        .lock()
+        .unwrap_or_else(dvb_core::sync::recover)
+        .clone();
+    let detail = match pass {
+        Some(pass) => {
+            let started = chrono::DateTime::from_timestamp_millis(pass.started.millis())
+                .map_or_else(
+                    || pass.started.millis().to_string(),
+                    |time| time.format("%H:%M UTC").to_string(),
+                );
+            let on = pass
+                .project
+                .and_then(|id| e.proj().projects.get(&id).map(|p| p.view.name.clone()))
+                .map(|name| format!(", now on project {name}"))
+                .unwrap_or_default();
+            format!(
+                "waiting for the GitHub mirror pass, started {started}{on}; nothing was changed, try again"
+            )
+        }
+        None => "waiting for the GitHub mirror; nothing was changed, try again".into(),
+    };
+    Err(e.refuse(
+        Some(project),
+        Actor::Owner,
+        command,
+        dvb_core::Refusal::new(dvb_core::RefusalCode::MirrorPassRunning, detail),
+    ))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -205,13 +333,41 @@ async fn sync_projects(e: &AppState, affected: Option<&BTreeSet<ProjectId>>) -> 
     let Some(forge) = e.forge() else {
         return Ok(true);
     };
-    // Serialize snapshots so event wakes cannot duplicate an in-flight retry.
-    let mut retries = e.mirror_retries.lock().await;
+    let started = e.clock.now();
+    let scope = affected.map_or_else(
+        || "every project".to_owned(),
+        |ids| {
+            let proj = e.proj();
+            ids.iter()
+                .map(|id| proj.projects.get(id).map_or(id.as_str(), |p| &p.view.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
+    );
+    eprintln!("dvb engine: GitHub mirror pass started for {scope}");
+    *e.mirror_pass.lock().unwrap_or_else(dvb_core::sync::recover) =
+        Some(dvb_core::api::MirrorPass {
+            started,
+            project: None,
+        });
+    let result = pass(e, forge.as_ref(), affected).await;
+    *e.mirror_pass.lock().unwrap_or_else(dvb_core::sync::recover) = None;
+    let seconds = e.clock.now().millis().saturating_sub(started.millis()) / 1000;
+    eprintln!("dvb engine: GitHub mirror pass for {scope} finished in {seconds} s");
+    result
+}
+
+async fn pass(
+    e: &AppState,
+    forge: &dyn dvb_core::forge::Forge,
+    affected: Option<&BTreeSet<ProjectId>>,
+) -> Result<bool, Fail> {
     let mut observations = Observations::default();
     for event in e.store.select(
         dvb_core::EventId(0),
         dvb_store::Select::Kinds(&[
             "github.mirror_observed",
+            "github.mirror_sent",
             "project.repo_unreachable",
             "project.repo_changed",
         ]),
@@ -221,7 +377,7 @@ async fn sync_projects(e: &AppState, affected: Option<&BTreeSet<ProjectId>>) -> 
         };
         #[expect(
             clippy::wildcard_enum_match_arm,
-            reason = "the store selects only these three kinds"
+            reason = "the store selects only these four kinds"
         )]
         match event.kind {
             EventKind::GithubMirrorObserved {
@@ -237,6 +393,20 @@ async fn sync_projects(e: &AppState, affected: Option<&BTreeSet<ProjectId>>) -> 
                     .items
                     .insert((project, goal, task), (mirrored, detail));
             }
+            EventKind::GithubMirrorSent {
+                goal,
+                task,
+                digest,
+                milestone,
+            } => {
+                let item = (project, goal, task);
+                match digest {
+                    Some(digest) => observations
+                        .sent
+                        .insert(item, Receipt { digest, milestone }),
+                    None => observations.sent.remove(&item),
+                };
+            }
             EventKind::ProjectRepoUnreachable { .. } => {
                 observations.unreachable.insert(project);
             }
@@ -246,19 +416,11 @@ async fn sync_projects(e: &AppState, affected: Option<&BTreeSet<ProjectId>>) -> 
             _ => {}
         }
     }
-    let mut healthy = project_jobs(e, forge.as_ref(), &mut retries, affected).await;
+    let mut healthy = project_jobs(e, forge, affected).await;
     let mut visibilities = Visibilities::new();
     for goal in snapshot(e, affected) {
-        healthy &= goal_job(
-            e,
-            forge.as_ref(),
-            &mut retries,
-            (&mut observations, &mut visibilities),
-            goal,
-        )
-        .await?;
+        healthy &= goal_job(e, forge, (&mut observations, &mut visibilities), goal).await?;
     }
-    drop(retries);
     // The same pass reads the issues of a project waiting for new work.
     let projects: Vec<ProjectId> = e
         .proj()
@@ -353,7 +515,6 @@ fn snapshot(e: &AppState, affected: Option<&BTreeSet<ProjectId>>) -> Vec<GoalSna
 async fn project_jobs(
     e: &AppState,
     forge: &dyn dvb_core::forge::Forge,
-    retries: &mut Retries,
     affected: Option<&BTreeSet<ProjectId>>,
 ) -> bool {
     let mut healthy = true;
@@ -365,7 +526,8 @@ async fn project_jobs(
         .map(|p| (p.view.id.clone(), Repo(p.view.repo.clone())))
         .collect::<Vec<_>>();
     for (project, repo) in repos {
-        if !unpaused(e, &project) {
+        let mut retries = job(e, &project).await;
+        if !mirrorable(e, &project, &repo) {
             continue;
         }
         let key = MirrorKey::Project(project.clone());
@@ -374,7 +536,8 @@ async fn project_jobs(
             healthy = false;
             continue;
         }
-        let result = scan_and_mirror(e, forge, retries, key, input).await;
+        let result = scan_and_mirror(e, forge, &mut retries, key, input).await;
+        drop(retries);
         if let Err(error) = result {
             healthy = false;
             eprintln!("dvb engine: GitHub project mirror: {error}");
@@ -386,14 +549,14 @@ async fn project_jobs(
 async fn goal_job(
     e: &AppState,
     forge: &dyn dvb_core::forge::Forge,
-    retries: &mut Retries,
     (observations, visibilities): (&mut Observations, &mut Visibilities),
     snapshot: GoalSnapshot,
 ) -> Result<bool, Fail> {
     let (project, goal, repo, text, mut mirror, tasks) = snapshot;
+    let mut retries = job(e, &project).await;
     // Recheck after every awaited forge operation: an in-flight write may
     // finish during a pause, but it must not start the next one.
-    if !unpaused(e, &project) {
+    if !mirrorable(e, &project, &repo) {
         return Ok(true);
     }
     let visibility = match visibilities.get(&repo) {
@@ -420,49 +583,56 @@ async fn goal_job(
             return Ok(false);
         }
     }
-    if !unpaused(e, &project) {
+    if !mirrorable(e, &project, &repo) {
         return Ok(true);
     }
-    let key = MirrorKey::Goal(goal.clone());
-    let input = MirrorInput::Goal(repo.clone(), mirror.clone());
-    let finished = mirror.done.then(|| FinishedGoal {
-        input: input.clone(),
-        tasks: tasks.clone(),
-    });
-    if finished.is_some() && retries.completed.get(&goal) == finished.as_ref() {
-        return Ok(true);
-    }
-    retries.completed.remove(&goal);
-    if !retries.due(&key, &input, e.clock.now()) {
-        return Ok(false);
-    }
-    let result = scan_and_mirror(e, forge, retries, key, input).await;
-    let milestone = match result {
-        Ok(number) => {
-            observed(e, observations, &project, &goal, None, Ok(()))?;
-            number
-        }
-        Err(error) => {
-            observed(e, observations, &project, &goal, None, Err(&error))?;
-            for (id, _) in tasks {
-                observed(e, observations, &project, &goal, Some(&id), Err(&error))?;
-            }
+    let item = (project.clone(), goal.clone(), None);
+    let digest = goal_digest(&mirror);
+    let unchanged = observations
+        .sent
+        .get(&item)
+        .filter(|sent| sent.digest == digest)
+        .and_then(|sent| sent.milestone);
+    let milestone = if let Some(number) = unchanged {
+        observed(e, observations, &project, &goal, None, Ok(()))?;
+        number
+    } else {
+        let key = MirrorKey::Goal(goal.clone());
+        let input = MirrorInput::Goal(repo.clone(), mirror);
+        if !retries.due(&key, &input, e.clock.now()) {
             return Ok(false);
+        }
+        match scan_and_mirror(e, forge, &mut retries, key, input).await {
+            Ok(number) => {
+                observed(e, observations, &project, &goal, None, Ok(()))?;
+                let sent = Receipt {
+                    digest,
+                    milestone: Some(number),
+                };
+                receipt(e, observations, item, Some(sent))?;
+                number
+            }
+            Err(error) => {
+                observed(e, observations, &project, &goal, None, Err(&error))?;
+                receipt(e, observations, item, None)?;
+                for (id, _) in tasks {
+                    observed(e, observations, &project, &goal, Some(&id), Err(&error))?;
+                }
+                return Ok(false);
+            }
         }
     };
     let all_mirrored = task_jobs(
         e,
         forge,
-        retries,
+        &mut retries,
         observations,
         (&project, &goal, &repo),
         milestone,
         tasks,
     )
     .await?;
-    if all_mirrored && let Some(finished) = finished {
-        retries.completed.insert(goal, finished);
-    }
+    drop(retries);
     Ok(all_mirrored)
 }
 
@@ -478,13 +648,23 @@ async fn task_jobs(
     let (project, goal, repo) = context;
     let mut all_mirrored = true;
     for (id, mut task) in tasks {
-        if !unpaused(e, project) {
+        if !mirrorable(e, project, repo) {
             all_mirrored = false;
             break;
         }
         task.milestone = milestone;
+        let item = (project.clone(), goal.clone(), Some(id.clone()));
+        let digest = task_digest(&task);
+        if observations
+            .sent
+            .get(&item)
+            .is_some_and(|sent| sent.digest == digest)
+        {
+            observed(e, observations, project, goal, Some(&id), Ok(()))?;
+            continue;
+        }
         let key = MirrorKey::Task(id.clone());
-        let input = MirrorInput::Task(repo.clone(), task.clone());
+        let input = MirrorInput::Task(repo.clone(), task);
         if !retries.due(&key, &input, e.clock.now()) {
             all_mirrored = false;
             continue;
@@ -501,6 +681,11 @@ async fn task_jobs(
             Some(&id),
             result.as_ref().copied(),
         )?;
+        let sent = result.is_ok().then_some(Receipt {
+            digest,
+            milestone: None,
+        });
+        receipt(e, observations, item, sent)?;
     }
     Ok(all_mirrored)
 }

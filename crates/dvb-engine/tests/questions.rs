@@ -1356,7 +1356,23 @@ async fn an_approved_task_at_the_run_cap_waits_for_a_run_to_end() {
         .await;
     assert!(e.proj().tasks[&task].facts.run.is_none());
     assert_eq!(e.proj().live_runs().count(), busy.len());
+    // Approval also wakes the orchestrator, and either start may take the
+    // freed slot. If the orchestrator's does, the task waits for that run.
     e.end_run(&busy[0], EndReason::Completed, None).unwrap();
+    let orchestrator = || {
+        e.proj()
+            .live_runs()
+            .find(|r| r.project == p && r.assignment.is_orchestrator())
+            .map(|r| r.assignment.run.clone())
+    };
+    support::wait::FAST
+        .until("a start takes the freed slot", || {
+            e.proj().tasks[&task].facts.run.is_some() || orchestrator().is_some()
+        })
+        .await;
+    if let Some(run) = orchestrator() {
+        e.end_run(&run, EndReason::Completed, None).unwrap();
+    }
     support::orchestrator::started(&e, &task).await;
 }
 

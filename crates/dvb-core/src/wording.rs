@@ -355,6 +355,7 @@ pub fn event_text(kind: &EventKind, time: impl Fn(Timestamp) -> String) -> Optio
         | RunLaunched { .. }
         | RunUsage { .. }
         | ProjectSeen {}
+        | GithubMirrorSent { .. }
         | ChecksPending { .. } => return None,
         EngineStarted { .. }
         | RunTimeLimitReached { .. }

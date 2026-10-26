@@ -552,16 +552,32 @@ async fn update_restarts_only_its_own_stops_once_even_in_a_paused_project() {
                     .unwrap();
             }
             dispatch::stop_for_update(&e, "99.0.0").await;
-            if let Some(actor) = later_stop {
-                // A second stop is refused. Resume and stop again to record
-                // an accepted owner/other-engine stop after the update's one.
+            if later_stop == Some(Actor::Engine) {
                 dispatch::resume(&e, &t, Actor::Owner).await.unwrap();
-                dispatch::stop(&e, &t, actor).await.unwrap();
+                dispatch::stop(&e, &t, Actor::Engine).await.unwrap();
             }
             e.append_checked(Some(&p), Actor::Owner, |_, _| {
                 Ok(vec![EventKind::ProjectPaused {}])
             })
             .unwrap();
+            if later_stop == Some(Actor::Owner) {
+                let before = support::events::all(&e).len();
+                let stopped = e.proj().tasks[&t].view.state.clone();
+                dispatch::stop(&e, &t, Actor::Owner).await.unwrap();
+                assert_eq!(e.proj().tasks[&t].view.state, stopped);
+                let events = support::events::all(&e);
+                assert_eq!(events.len(), before + 1);
+                assert_eq!(events[before].actor, Actor::Owner);
+                assert!(matches!(
+                    &events[before].kind,
+                    EventKind::TaskStopped { task, update: false, .. } if task == &t
+                ));
+                assert!(e.proj().tasks[&t].update_stop.is_none());
+                assert!(matches!(
+                    dispatch::stop(&e, &t, Actor::Owner).await,
+                    Err(dvb_engine::Fail::Refused(r)) if r.code == dvb_core::RefusalCode::AlreadyStopped
+                ));
+            }
             let l = Layout::of(&cfg);
             std::fs::create_dir_all(l.versions()).unwrap();
             prepare(&l, &e.store, dvb_core::VERSION, "99.0.0").unwrap();

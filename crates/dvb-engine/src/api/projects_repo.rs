@@ -1,4 +1,4 @@
-//! Repointing a project at its repository's new name after a rename or transfer.
+//! Repointing a project at its repository's new name after a rename.
 
 use super::invalid;
 use crate::AppState;
@@ -69,8 +69,6 @@ pub async fn set_project_repo(
     let forge = e
         .forge()
         .ok_or_else(|| invalid("GitHub App is not configured. Run dvb github connect."))?;
-    // No mirror pass writes receipts under the old name while they move.
-    let _mirror = e.mirror_retries.lock().await;
     let same = forge.repository_id(&to).await.map_err(Fail::internal)?;
     let Some(same) = same else {
         return Err(refuse(
@@ -81,13 +79,30 @@ pub async fn set_project_repo(
             ),
         ));
     };
-    if forge.repository_id(&from).await.map_err(Fail::internal)? != Some(same) {
+    let Some(previous) = forge.repository_id(&from).await.map_err(Fail::internal)? else {
+        return Err(refuse(
+            RefusalCode::RepositoryMismatch,
+            format!(
+                "GitHub no longer resolves {}, so dvb cannot confirm {} is the same repository; remove the project and add {}",
+                from.0, to.0, to.0
+            ),
+        ));
+    };
+    if previous != same {
         return Err(refuse(
             RefusalCode::RepositoryMismatch,
             format!(
                 "{} is not the repository {} was; a project keeps its repository",
                 to.0, from.0
             ),
+        ));
+    }
+    // No mirror job writes receipts under the old name while they move.
+    let _mirror = crate::publish::mirror::lock_for_change(&e, &id, "project.repo").await?;
+    if e.proj().projects.get(&id).map(|p| p.view.repo.as_str()) != Some(from.0.as_str()) {
+        return Err(refuse(
+            RefusalCode::ValueChanged,
+            format!("project {name} changed repository meanwhile"),
         ));
     }
     forge.repoint_mirror(&from, &to).map_err(Fail::internal)?;
@@ -111,14 +126,7 @@ pub async fn set_project_repo(
                 .map_err(Fail::internal)?;
         }
     }
-    e.append_checked(Some(&id), Actor::Owner, |proj, _| {
-        if proj.projects.get(&id).map(|p| p.view.repo.as_str()) != Some(from.0.as_str()) {
-            return Err(Refusal::new(
-                RefusalCode::ValueChanged,
-                format!("project {name} changed repository meanwhile"),
-            )
-            .into());
-        }
+    e.append_checked(Some(&id), Actor::Owner, |_, _| {
         Ok(vec![EventKind::ProjectRepoChanged {
             from: from.0.clone(),
             to: to.0.clone(),

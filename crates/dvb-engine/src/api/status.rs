@@ -108,6 +108,11 @@ pub async fn get_status(State(e): State<AppState>, Query(q): Query<ProjectQuery>
         warnings: crate::launch::install_warnings(&e.cfg),
         rulesets_missing,
         tasks,
+        mirror_pass: e
+            .mirror_pass
+            .lock()
+            .unwrap_or_else(dvb_core::sync::recover)
+            .clone(),
     })
 }
 
@@ -160,6 +165,7 @@ mod tests {
                 needs_you: 2,
                 warnings: vec![],
                 rulesets_missing: vec![],
+                mirror_pass: None,
                 tasks: vec![],
             }
         );
@@ -192,6 +198,7 @@ mod tests {
                 needs_you: 0,
                 warnings: vec![],
                 rulesets_missing: vec![],
+                mirror_pass: None,
                 tasks: vec![],
             }
         );
@@ -202,6 +209,7 @@ mod tests {
                 needs_you: 1,
                 warnings: vec![],
                 rulesets_missing: vec![],
+                mirror_pass: None,
                 tasks: vec![],
             }
         );

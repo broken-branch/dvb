@@ -131,10 +131,15 @@ copied. REST validation errors keep the same plain-word filter. Partial data wit
 errors is still refused.
 
 Mirroring runs on startup and relevant engine events, coalesces event bursts,
-repairs healthy mirrors every five minutes and backs off failed project, goal and
+passes over every project every five minutes and backs off failed project, goal and
 task writes from one minute, doubling up to one hour. Success or changed mirror
-content resets that mirror’s backoff. Retry deadlines use the engine clock; they
-are kept in memory, so a restart immediately repairs all mirrors once.
+content resets that mirror’s backoff. Retry deadlines use the engine clock and
+are kept in memory. A milestone or card is sent only when its content differs
+from its last receipt, a quiet `github.mirror_sent` event with the digest of
+what GitHub confirmed (and the milestone number), so passes after a restart or
+update send nothing for unchanged and finished goals. A failed send drops the
+item's receipt, so it is sent again even if its content returns to the last one.
+A manual edit of a milestone or card stays until dvb's item changes.
 Run output does not trigger GitHub writes. Mirror and App setup effects also use
 the update protocol’s gate, so an update snapshots only after their writes finish. The Project heading shows No CI and
 its cards explicitly retain Review required.
@@ -165,5 +170,6 @@ workers or error bodies.
 Tests use Fake/local Git or recorded loopback responses. See the [code map](../../docs/map/forge.md)
 for fixtures and flows, and the [testing guide](../../docs/testing.md) for gates.
 `cargo nextest run --locked --offline -p dvb-engine --test github_mirror`
-drives two fixture PRs through the board, closes their shared milestone, repairs manual card edits,
-and clears a scan failure after restarting from the event log.
+drives two fixture PRs through the board, closes their shared milestone, overwrites manual card
+edits on the task's next change, sends nothing for unchanged items, also after a restart, and
+clears a scan failure after restarting from the event log.

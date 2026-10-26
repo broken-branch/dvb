@@ -25,6 +25,7 @@
   "github.mirror_observed": "GitHub mirror updated",
   "github.mirror_observed.failed": "Not mirrored on GitHub",
   "github.mirror_observed.detail": "Not mirrored on GitHub: {detail}",
+  "github.mirror_sent": null,
   "goal.issue_closed": "Issue #{issue} closed",
   "proposal.requested": "Next goal asked for from the open issues",
   "project.issues_found": "Open issues found: {open} ({trusted} trusted{labelled})",

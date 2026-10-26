@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.1.68"
+    "version": "0.1.69"
   },
   "paths": {
     "/events": {
@@ -5916,6 +5916,58 @@
           },
           {
             "type": "object",
+            "description": "The mirror's receipt for a goal's milestone or a task's card: the\ndigest of what GitHub confirmed, or none after a failed send, so\nthe next pass sends it again. A goal's carries its milestone number.",
+            "required": [
+              "payload",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "github.mirror_sent"
+                ]
+              },
+              "payload": {
+                "type": "object",
+                "description": "The mirror's receipt for a goal's milestone or a task's card: the\ndigest of what GitHub confirmed, or none after a failed send, so\nthe next pass sends it again. A goal's carries its milestone number.",
+                "required": [
+                  "goal"
+                ],
+                "properties": {
+                  "digest": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "goal": {
+                    "$ref": "#/components/schemas/GoalId"
+                  },
+                  "milestone": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "int64",
+                    "minimum": 0
+                  },
+                  "task": {
+                    "oneOf": [
+                      {
+                        "$ref": "#/components/schemas/TaskId"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
             "required": [
               "payload",
               "kind"
@@ -8504,6 +8556,29 @@
           }
         }
       },
+      "MirrorPass": {
+        "type": "object",
+        "description": "A GitHub mirror pass: when it started and whose job it runs now.",
+        "required": [
+          "started"
+        ],
+        "properties": {
+          "project": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectId",
+                "description": "Absent between two jobs of the pass."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
       "ModelMode": {
         "type": "string",
         "description": "How the engine selects models for new work.",
@@ -9822,6 +9897,21 @@
                 }
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "A project's remove or repoint waited too long for the GitHub mirror\npass and changed nothing; the detail says when the pass started.",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "MIRROR_PASS_RUNNING"
+                ]
+              }
+            }
           }
         ],
         "description": "The code, with the few fields some codes carry. Serialized with the code in\n`code`, e.g. `{\"code\": \"CAP_REACHED\", \"which\": \"concurrent_runs\"}`."
@@ -10605,6 +10695,17 @@
           "needs_you"
         ],
         "properties": {
+          "mirror_pass": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MirrorPass",
+                "description": "The GitHub mirror pass running now; absent between passes."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "needs_you": {
             "type": "integer",
             "format": "int32",

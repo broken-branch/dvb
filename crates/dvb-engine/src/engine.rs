@@ -305,7 +305,10 @@ pub struct Engine {
     pub(crate) github_setup: tokio::sync::Mutex<()>,
     pub(crate) github_wait: Arc<dvb_forge::Wait>,
     pub(crate) github_setup_client: Mutex<Option<(String, dvb_forge::github_setup::Client)>>,
+    /// Held for one project or goal job of a mirror pass, and by a project's
+    /// remove or repoint.
     pub(crate) mirror_retries: tokio::sync::Mutex<crate::publish::mirror::Retries>,
+    pub(crate) mirror_pass: Mutex<Option<dvb_core::api::MirrorPass>>,
     proj: Mutex<Projections>,
     feed: broadcast::Sender<Event>,
     /// Each task's lock: an effect is checked, sent and recorded under it.
@@ -480,6 +483,7 @@ impl Engine {
             github_wait,
             github_setup_client: Mutex::new(None),
             mirror_retries: tokio::sync::Mutex::new(crate::publish::mirror::Retries::default()),
+            mirror_pass: Mutex::new(None),
             proj: Mutex::new(projections),
             feed,
             locks: KeyedLocks::default(),
@@ -857,7 +861,21 @@ impl Engine {
             .ok_or_else(|| Fail::NotFound(format!("task {task}")))?;
         let project = t.view.project.clone();
         let ctx = self.context(&proj, &t, &cmd, self.clock.now())?;
-        match decide(&t.view.state, cmd, &ctx) {
+        let decided = if let Command::Stop(reason) = &cmd
+            && actor == Actor::Owner
+            && matches!(t.view.state, TaskState::Stopped { .. })
+            && t.update_stop.is_some()
+        {
+            // The owner's stop replaces the update's automatic resume intent.
+            Ok(vec![EventKind::TaskStopped {
+                task: task.clone(),
+                reason: reason.clone(),
+                update: false,
+            }])
+        } else {
+            decide(&t.view.state, cmd, &ctx)
+        };
+        match decided {
             Ok(mut kinds) => {
                 if update_stop {
                     for kind in &mut kinds {

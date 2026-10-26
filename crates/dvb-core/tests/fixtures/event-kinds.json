@@ -33,6 +33,7 @@
   {"kind": "goal.issue_closed", "payload": {"goal": "value", "issue": 1}},
   {"kind": "proposal.requested", "payload": {}},
   {"kind": "github.mirror_observed", "payload": {"detail": "value", "goal": "value", "mirrored": false, "task": "value"}},
+  {"kind": "github.mirror_sent", "payload": {"digest": "value", "goal": "value", "milestone": 1, "task": "value"}},
   {"kind": "question.opened", "payload": {"format": "simple", "lapses_on": {"goal_version": 1}, "options": [], "question": "value", "recommended": 1, "subject": "value"}},
   {"kind": "question.answered", "payload": {"answer": {"choice": 1}, "question": "value"}},
   {"kind": "question.closed", "payload": {"question": "value", "task": "value"}},

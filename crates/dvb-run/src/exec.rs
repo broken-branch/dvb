@@ -300,7 +300,7 @@ pub async fn exec(run: &str) -> RunOutcome {
     } else {
         whole_run(&env, run).await
     };
-    share_run_dir(&env.dir);
+    share_run(&env.dir);
     // The session may end first, cut short by the same stop.
     if stopped.load(std::sync::atomic::Ordering::SeqCst) {
         RunOutcome::Completed
@@ -325,7 +325,7 @@ fn share_on_stop(dir: &Path) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
     tokio::spawn(async move {
         if term.recv().await.is_some() {
             seen.store(true, std::sync::atomic::Ordering::SeqCst);
-            share_run_dir(&dir);
+            share_run(&dir);
             std::process::exit(0);
         }
     });
@@ -438,12 +438,24 @@ fn write_reason(dir: &Path, outcome: RunOutcome) {
     }
 }
 
-/// Gives the group every directory the run left under its run directory, so
-/// the engine (in the run's group) can remove the directory once nothing needs
-/// it: tools can make directories without group write whatever the umask.
-/// Another mount inside, such as the vendor's login directory on the managed
-/// home, is left alone. Best effort: the first failure is logged.
-fn share_run_dir(dir: &Path) {
+/// Gives the group every directory the run left under its run directory `dir`
+/// and in its project's cache, so the engine (in the run's group) can remove
+/// either once nothing needs it: tools can make directories without group write
+/// whatever the umask. sccache's server daemonizes with umask 0027, so every
+/// directory it makes in the cache is 0750.
+pub fn share_run(dir: &Path) {
+    share_tree(dir);
+    // The engine's link to the cache, which the unit mounts at the cache's own
+    // path; a login run has none.
+    if let Ok(cache) = std::fs::canonicalize(dir.join("cache")) {
+        share_tree(&cache);
+    }
+}
+
+/// Gives the group every directory under `dir`. Another mount inside, such as
+/// the vendor's login directory on the managed home, is left alone. Best
+/// effort: the first failure is logged.
+fn share_tree(dir: &Path) {
     use rustix::fs::{AtFlags, StatxFlags};
     let mount = match rustix::fs::statx(
         rustix::fs::CWD,
@@ -1073,7 +1085,7 @@ mod tests {
         set(&sealed, 0o555);
         set(&dir.join("build/debug"), 0o700);
         set(&outside, 0o700);
-        share_run_dir(&dir);
+        share_tree(&dir);
         assert_eq!(mode(&dir.join("build/debug")), 0o770);
         assert_eq!(mode(&deps), 0o775);
         assert_eq!(mode(&sealed), 0o575);

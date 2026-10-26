@@ -13,7 +13,7 @@ mod stream;
 mod usage;
 mod verb;
 
-pub use exec::prepare_build_cache;
+pub use exec::{prepare_build_cache, share_run};
 pub use stream::StderrTail;
 
 /// `dvb run exec <run>` or `dvb run <verb> [<json>]`; returns the exit code.

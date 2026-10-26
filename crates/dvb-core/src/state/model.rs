@@ -367,6 +367,7 @@ impl Sim {
             | EventKind::ProjectRepoUnreachable { .. }
             | EventKind::ProjectRemoved { .. }
             | EventKind::GithubMirrorObserved { .. }
+            | EventKind::GithubMirrorSent { .. }
             | EventKind::EngineUpdated { .. }
             | EventKind::EngineUpdateFailed { .. }
             | EventKind::EngineReconciled { .. }

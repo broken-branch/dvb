@@ -25,21 +25,13 @@ pub async fn remove_project(
     State(e): State<AppState>,
     Path(id): Path<ProjectId>,
 ) -> Result<Json<ProjectRemoval>, Fail> {
-    // No mirror pass writes the project's receipts while they are dropped.
-    let _mirror = e.mirror_retries.lock().await;
     let found = {
         let proj = e.proj();
-        proj.projects.get(&id).map(|p| {
-            let runs: Vec<_> = proj
-                .runs
-                .values()
-                .filter(|r| r.project == id)
-                .map(|r| r.assignment.run.clone())
-                .collect();
-            (p.view.clone(), runs, busy(&proj, &id, &p.view.name))
-        })
+        proj.projects
+            .get(&id)
+            .map(|p| (p.view.clone(), busy(&proj, &id, &p.view.name)))
     };
-    let Some((project, runs, refusal)) = found else {
+    let Some((project, refusal)) = found else {
         return Err(e.refuse(
             None,
             Actor::Owner,
@@ -50,6 +42,9 @@ pub async fn remove_project(
     if let Some(refusal) = refusal {
         return Err(e.refuse(Some(&id), Actor::Owner, "project.remove", refusal));
     }
+    // The mirror job running now finishes before the receipts go.
+    let mirror = crate::publish::mirror::lock_for_change(&e, &id, "project.remove").await?;
+    let mut runs = Vec::new();
     e.append_checked(Some(&id), Actor::Owner, |proj, _| {
         if !proj.projects.contains_key(&id) {
             return Err(Refusal::new(
@@ -61,18 +56,35 @@ pub async fn remove_project(
         if let Some(refusal) = busy(proj, &id, &project.name) {
             return Err(refusal.into());
         }
+        runs = proj
+            .runs
+            .values()
+            .filter(|r| r.project == id)
+            .map(|r| r.assignment.run.clone())
+            .collect();
         Ok(vec![EventKind::ProjectRemoved {
             name: project.name.clone(),
             repo: project.repo.clone(),
         }])
     })?;
+    // After the append no pass sees the project, so its files are freed unlocked.
+    let mut not_freed = Vec::new();
+    if let Some(forge) = e.forge()
+        && let Err(err) = forge.forget_mirror(&Repo(project.repo.clone()))
+    {
+        not_freed.push(format!("github-mirror.json: {}", err.detail));
+    }
+    drop(mirror);
     let mut dirs: Vec<PathBuf> = runs
         .iter()
         .map(|run| e.cfg.paths.work.join(run.as_str()))
         .collect();
     dirs.push(e.mirror(&project.name));
     dirs.push(e.cfg.paths.mirrors.join(".cache").join(id.as_str()));
-    let mut not_freed = tokio::task::spawn_blocking(move || {
+    // Runs leave these directories group-writable as they end
+    // (`dvb_run::share_run`), so the engine need not own them; `remove_dir_all`
+    // removes a link a run left, never what it points to.
+    let dirs = tokio::task::spawn_blocking(move || {
         dirs.iter()
             .filter_map(|dir| match std::fs::remove_dir_all(dir) {
                 Ok(()) => None,
@@ -83,11 +95,7 @@ pub async fn remove_project(
     })
     .await
     .map_err(Fail::internal)?;
-    if let Some(forge) = e.forge()
-        && let Err(err) = forge.forget_mirror(&Repo(project.repo.clone()))
-    {
-        not_freed.push(format!("github-mirror.json: {}", err.detail));
-    }
+    not_freed.extend(dirs);
     Ok(Json(ProjectRemoval { project, not_freed }))
 }
 

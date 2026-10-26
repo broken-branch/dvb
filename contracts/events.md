@@ -88,6 +88,7 @@ from the payload or the records it names; null entries are hidden from the feed.
 | `pr.merged` | task, pr, sha |
 | `effect.retry` | task, effect, attempt, at, rate_limit? ({reset?}; absent historically; budget waits do not spend attempts) |
 | `github.mirror_observed` | goal, task?, mirrored, detail? |
+| `github.mirror_sent` | goal, task?, digest?, milestone? (quiet; the mirror's receipt of what GitHub confirmed for the goal's milestone, with its number, or the task's card; digest null after a failed send so the next pass sends again) |
 
 Project check replacements use owner `settings.changed` events scoped to the
 project, with key `project_checks` and old/new values in the existing `CiMode`

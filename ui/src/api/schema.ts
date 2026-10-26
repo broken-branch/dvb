@@ -1539,6 +1539,22 @@ export interface components {
         }
       | {
           /** @enum {string} */
+          kind: 'github.mirror_sent';
+          /**
+           * @description The mirror's receipt for a goal's milestone or a task's card: the
+           *     digest of what GitHub confirmed, or none after a failed send, so
+           *     the next pass sends it again. A goal's carries its milestone number.
+           */
+          payload: {
+            digest?: string | null;
+            goal: components['schemas']['GoalId'];
+            /** Format: int64 */
+            milestone?: number | null;
+            task?: components['schemas']['TaskId'] | null;
+          };
+        }
+      | {
+          /** @enum {string} */
           kind: 'question.opened';
           payload: {
             format: components['schemas']['QuestionFormat'];
@@ -2323,6 +2339,11 @@ export interface components {
        */
       needed?: components['schemas']['Vendor'][];
     };
+    /** @description A GitHub mirror pass: when it started and whose job it runs now. */
+    MirrorPass: {
+      project?: components['schemas']['ProjectId'] | null;
+      started: components['schemas']['Timestamp'];
+    };
     /**
      * @description How the engine selects models for new work.
      * @enum {string}
@@ -2726,6 +2747,10 @@ export interface components {
           /** @enum {string} */
           code: 'PROJECT_BUSY';
           tasks: components['schemas']['TaskId'][];
+        }
+      | {
+          /** @enum {string} */
+          code: 'MIRROR_PASS_RUNNING';
         };
     /** @description A refused command (`command.refused`). */
     RefusedCommand: components['schemas']['RecordedRefusal'] & {
@@ -2980,6 +3005,7 @@ export interface components {
     };
     /** @description The `dvb status --bar` shape. */
     Status: {
+      mirror_pass?: components['schemas']['MirrorPass'] | null;
       /** Format: int32 */
       needs_you: number;
       /**

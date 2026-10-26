@@ -244,7 +244,7 @@ async fn pause_allows_the_inflight_mirror_write_to_finish_but_starts_no_next_wri
 }
 
 #[tokio::test]
-async fn two_prs_share_one_milestone_cards_move_and_manual_edits_are_overwritten() {
+async fn two_prs_share_one_milestone_cards_move_and_manual_edits_stay_until_the_task_changes() {
     let (_dir, e, project, goal, tasks, _fake) = fixture();
     let repo = Repo("org/repo".into());
     let forge = &_fake;
@@ -278,6 +278,8 @@ async fn two_prs_share_one_milestone_cards_move_and_manual_edits_are_overwritten
             assert_eq!(card.state, column);
             assert_eq!(card.milestone, 1);
             assert_eq!(card.role, "Backend builder");
+            // A pass sends only what changed since its receipt, so a manual
+            // edit stays until the task's next change overwrites it.
             let mut changed = card.clone();
             changed.state = BoardState::Failed;
             changed.title = "Manual edit".into();
@@ -290,7 +292,7 @@ async fn two_prs_share_one_milestone_cards_move_and_manual_edits_are_overwritten
                     .into_iter()
                     .find(|c| c.key == task.to_string())
                     .unwrap(),
-                card
+                changed
             );
         }
     }
@@ -358,10 +360,11 @@ async fn scan_hits_mark_work_as_not_mirrored_and_recovery_clears_the_mark() {
         TaskState::Running
     );
     assert_eq!(restarted_fake.milestones(&repo).len(), 1);
-    assert!(matches!(
-        support::events::all(&restarted).last().unwrap().kind,
-        EventKind::GithubMirrorObserved { mirrored: true, .. }
-    ));
+    assert!(
+        mirror_observations(&restarted)
+            .last()
+            .is_some_and(|(_, _, mirrored)| *mirrored)
+    );
 }
 
 #[tokio::test]
@@ -454,7 +457,7 @@ fn unfinished_goal_issue_recovery_starts_no_background_tasks() {
 }
 
 #[tokio::test]
-async fn finished_goal_snapshots_skip_unchanged_writes_and_repair_after_restart() {
+async fn finished_goal_snapshots_skip_unchanged_writes_also_after_a_restart() {
     for dropped in [false, true] {
         let clock = Arc::new(FakeClock::at(Timestamp(0)));
         let forge = Arc::new(InterruptedForge::new(Arc::new(
@@ -500,20 +503,9 @@ async fn finished_goal_snapshots_skip_unchanged_writes_and_repair_after_restart(
         assert_eq!(attempts(&forge, "task"), 2);
         assert_eq!(support::events::all(&e).len(), events);
 
-        e.proj().goals.get_mut(&goal).unwrap().text = "Changed goal".into();
-        assert!(mirror::sync(&e).await.unwrap());
-        assert_eq!(attempts(&forge, "goal"), 2);
-        assert_eq!(attempts(&forge, "task"), 4);
-        e.proj().tasks.get_mut(&tasks[0]).unwrap().view.title = "Changed task".into();
-        assert!(mirror::sync(&e).await.unwrap());
-        assert_eq!(attempts(&forge, "goal"), 3);
-        assert_eq!(attempts(&forge, "task"), 6);
-        assert!(mirror::sync(&e).await.unwrap());
-        assert_eq!(attempts(&forge, "goal"), 3);
-        assert_eq!(attempts(&forge, "task"), 6);
-
+        // The receipts are durable: the first pass after a start sends nothing.
         drop(e);
-        let restarted = support::engine::open_with(
+        let e = support::engine::open_with(
             dir.path(),
             "dvb",
             dvb_engine::EngineOptions {
@@ -522,14 +514,133 @@ async fn finished_goal_snapshots_skip_unchanged_writes_and_repair_after_restart(
                 ..Default::default()
             },
         );
-        let events = support::events::all(&restarted).len();
-        assert!(mirror::sync(&restarted).await.unwrap());
-        assert_eq!(attempts(&forge, "goal"), 4);
-        assert_eq!(attempts(&forge, "task"), 8);
-        assert_eq!(support::events::all(&restarted).len(), events);
-        assert!(mirror::sync(&restarted).await.unwrap());
-        assert_eq!(attempts(&forge, "goal"), 4);
-        assert_eq!(attempts(&forge, "task"), 8);
+        let events = support::events::all(&e).len();
+        assert!(mirror::sync(&e).await.unwrap());
+        assert_eq!(attempts(&forge, "goal"), 1);
+        assert_eq!(attempts(&forge, "task"), 2);
+        assert_eq!(support::events::all(&e).len(), events);
+
+        // Only the changed item is sent: the goal's text is on its milestone,
+        // a task's title on its card and in the milestone's task lines.
+        e.proj().goals.get_mut(&goal).unwrap().text = "Changed goal".into();
+        assert!(mirror::sync(&e).await.unwrap());
+        assert_eq!(attempts(&forge, "goal"), 2);
+        assert_eq!(attempts(&forge, "task"), 2);
+        e.proj().tasks.get_mut(&tasks[0]).unwrap().view.title = "Changed task".into();
+        assert!(mirror::sync(&e).await.unwrap());
+        assert_eq!(attempts(&forge, "goal"), 3);
+        assert_eq!(attempts(&forge, "task"), 3);
+        assert!(mirror::sync(&e).await.unwrap());
+        assert_eq!(attempts(&forge, "goal"), 3);
+        assert_eq!(attempts(&forge, "task"), 3);
+    }
+}
+
+/// The forge calls of one pass, from the Fake forge's record.
+async fn pass_calls(e: &AppState, forge: &dvb_forge::FakeForge) -> Vec<String> {
+    let before = forge.calls().len();
+    assert!(mirror::sync(e).await.unwrap());
+    forge.calls()[before..].to_vec()
+}
+
+#[tokio::test]
+async fn an_unchanged_second_pass_sends_nothing_to_github() {
+    let (_dir, e, project, _goal, tasks, forge) = fixture();
+    let first = pass_calls(&e, &forge).await;
+    assert_eq!(
+        first,
+        [
+            "mirror_project",
+            "visibility",
+            "mirror_goal",
+            "mirror_task",
+            "mirror_task"
+        ]
+    );
+    let events = support::events::all(&e).len();
+    for _ in 0..2 {
+        let unchanged = pass_calls(&e, &forge).await;
+        assert_eq!(unchanged, ["mirror_project", "visibility"]);
+    }
+    assert_eq!(
+        support::events::all(&e).len(),
+        events,
+        "no receipt is resent"
+    );
+
+    // A task's new state is on its card and in the milestone's task lines.
+    state(&e, &project, &tasks[1], TaskState::Running);
+    let changed = pass_calls(&e, &forge).await;
+    assert_eq!(
+        changed,
+        ["mirror_project", "visibility", "mirror_goal", "mirror_task"]
+    );
+    let card = forge
+        .cards(&Repo("org/repo".into()))
+        .into_iter()
+        .find(|card| card.key == tasks[1].to_string())
+        .unwrap();
+    assert_eq!(card.state, BoardState::Working);
+}
+
+#[tokio::test]
+async fn a_failed_send_is_sent_again_even_when_its_content_returns_to_its_receipt() {
+    use dvb_core::forge::ForgeError;
+    let clock = Arc::new(FakeClock::at(Timestamp(0)));
+    let forge = Arc::new(dvb_forge::FakeForge::default().with_clock(clock.clone()));
+    let (dir, e, _project, _goal, tasks, _fake) =
+        fixture_with_clock(Some(forge.clone()), clock.clone());
+    let repo = Repo("org/repo".into());
+    let card = |forge: &dvb_forge::FakeForge| {
+        forge
+            .cards(&repo)
+            .into_iter()
+            .find(|card| card.key == tasks[0].to_string())
+            .unwrap()
+    };
+    let sends = |calls: &[String]| calls.iter().filter(|c| *c == "mirror_task").count();
+    pass_calls(&e, &forge).await;
+    let confirmed = card(&forge);
+
+    // GitHub may have applied part of a failed send: its receipt no longer holds.
+    let fail = || ForgeError {
+        rate_limit: None,
+        retryable: true,
+        unreachable: false,
+        detail: "GitHub HTTP 502".into(),
+    };
+    for restart in [false, true] {
+        e.proj().tasks.get_mut(&tasks[0]).unwrap().view.title = "Changed".into();
+        forge.fail_next("mirror_task", fail());
+        let before = forge.calls().len();
+        assert!(!mirror::sync(&e).await.unwrap());
+        assert_eq!(sends(&forge.calls()[before..]), 1);
+        e.proj().tasks.get_mut(&tasks[0]).unwrap().view.title = confirmed.title.clone();
+        let e = if restart {
+            // The restarted engine reads the title back from its log.
+            support::engine::open_with(
+                dir.path(),
+                "dvb",
+                dvb_engine::EngineOptions {
+                    clock: Some(clock.clone()),
+                    forge: Some(forge.clone()),
+                    ..Default::default()
+                },
+            )
+        } else {
+            e.clone()
+        };
+        assert_eq!(
+            sends(&pass_calls(&e, &forge).await),
+            1,
+            "restart: {restart}"
+        );
+        assert_eq!(card(&forge), confirmed);
+        assert_eq!(
+            sends(&pass_calls(&e, &forge).await),
+            0,
+            "restart: {restart}"
+        );
     }
 }
 
@@ -684,7 +795,7 @@ async fn untimed_mirror_limits_double_backoff_and_cap_at_one_hour() {
 #[tokio::test]
 async fn mirror_success_resets_the_next_failure_to_one_minute() {
     for (operation, writes_per_attempt) in [("project", 1), ("goal", 1), ("task", 2)] {
-        let ((_dir, e, _project, _goal, _tasks, _fake), forge, clock) =
+        let ((_dir, e, _project, _goal, tasks, _fake), forge, clock) =
             failing_fixture(operation, Timestamp(0));
         mirror::sync(&e).await.unwrap();
         clock.advance_millis(60_000);
@@ -693,6 +804,10 @@ async fn mirror_success_resets_the_next_failure_to_one_minute() {
         clock.advance_millis(120_000);
         assert!(mirror::sync(&e).await.unwrap());
         *forge.mirror_failure.lock().unwrap() = Some(operation);
+        // An unchanged goal or card is not sent again; a change is.
+        for task in &tasks {
+            e.proj().tasks.get_mut(task).unwrap().view.title = "Changed".into();
+        }
         assert!(!mirror::sync(&e).await.unwrap());
         let before = attempts(&forge, operation);
         clock.advance_millis(59_999);
@@ -773,6 +888,11 @@ async fn an_outage_records_one_failure_and_one_recovery_for_the_whole_project() 
 
         *forge.mirror_failure.lock().unwrap() = Some(operation);
         forge.mirror_writes.lock().unwrap().clear();
+        // Every card and, through its task lines, every milestone changes.
+        let ids: Vec<TaskId> = e.proj().tasks.keys().cloned().collect();
+        for id in ids {
+            e.proj().tasks.get_mut(&id).unwrap().view.title = format!("Rebuild {id}");
+        }
         for delay in [0, 0, 60_000, 0, 120_000, 240_000] {
             clock.advance_millis(delay);
             assert!(!mirror::sync(&e).await.unwrap());
@@ -1023,18 +1143,28 @@ async fn a_renamed_repository_is_reported_once_and_a_repoint_keeps_its_mirror() 
         support::git::git(&mirror_dir, &["config", "--get", "remote.origin.url"]),
         "https://github.com/org/renamed.git"
     );
+    // The receipts moved with the repository: nothing changed, nothing is sent.
     let writes = forge.calls().len();
     assert!(mirror::sync(&e).await.unwrap());
-    assert!(
-        forge.calls()[writes..]
+    let sent = |from: usize| {
+        forge.calls()[from..]
             .iter()
-            .any(|call| call == "mirror_goal")
-    );
+            .filter(|call| *call == "mirror_goal" || *call == "mirror_task")
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(sent(writes), Vec::<String>::new());
+    let task = e.proj().tasks.keys().next().cloned().unwrap();
+    e.proj().tasks.get_mut(&task).unwrap().view.title = "Renamed card".into();
+    let writes = forge.calls().len();
+    assert!(mirror::sync(&e).await.unwrap());
+    assert_eq!(sent(writes), ["mirror_goal", "mirror_task"]);
     assert_eq!(
-        forge.milestones(&new),
-        milestones,
+        forge.milestones(&new).len(),
+        1,
         "same milestone, no new one"
     );
+    assert_eq!(forge.milestones(&new)[0].0, milestones[0].0);
     assert_eq!(forge.cards(&new).len(), cards.len());
     assert_eq!(unreachable(&e).len(), 1);
     let events = support::events::all(&e);
@@ -1052,9 +1182,91 @@ async fn a_renamed_repository_is_reported_once_and_a_repoint_keeps_its_mirror() 
 }
 
 #[tokio::test]
+async fn a_missing_old_repository_name_cannot_confirm_a_repoint() {
+    use axum::http::{Method, StatusCode};
+    let (_dir, e, project, _, _, forge) = fixture();
+    forge
+        .mirror_project(&Repo("org/renamed".into()))
+        .await
+        .unwrap();
+    let (status, body) = support::http::call(
+        &e,
+        Method::PUT,
+        "/projects/project/repo",
+        Some(serde_json::json!({"repo": "org/renamed"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "REPOSITORY_MISMATCH");
+    assert_eq!(
+        body["detail"],
+        "GitHub no longer resolves org/repo, so dvb cannot confirm org/renamed is the same repository; remove the project and add org/renamed"
+    );
+    assert_eq!(e.proj().projects[&project].view.repo, "org/repo");
+}
+
+#[tokio::test]
+async fn removing_and_readding_the_same_repository_reuses_one_board_and_clones_a_fresh_mirror() {
+    use axum::http::{Method, StatusCode};
+    use support::git::{git, seed_repository};
+
+    let dir = tempfile::tempdir().unwrap();
+    let origin = dir.path().join("origin");
+    seed_repository(&origin, "main", None, "Seed");
+    let forge = Arc::new(dvb_forge::FakeForge::local_git());
+    let e = support::engine::open_with(
+        &dir.path().join("engine"),
+        "dvb",
+        dvb_engine::EngineOptions {
+            forge: Some(forge.clone()),
+            ..Default::default()
+        },
+    );
+    e.manual_dispatch();
+    let repo = Repo(origin.to_str().unwrap().into());
+    let body = serde_json::json!({"name": "Project", "repo": repo.0, "ci": "no_ci"});
+    let (status, first) =
+        support::http::call(&e, Method::POST, "/projects", Some(body.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    assert!(mirror::sync(&e).await.unwrap());
+    assert_eq!(forge.boards().as_slice(), std::slice::from_ref(&repo));
+    let mirror_dir = e.mirror("Project");
+    let old_head = git(&mirror_dir, &["rev-parse", "HEAD"]);
+    std::fs::write(mirror_dir.join("old-mirror"), "local receipt").unwrap();
+
+    let (status, removed) = support::http::call(
+        &e,
+        Method::POST,
+        &format!("/projects/{}/remove", first["id"].as_str().unwrap()),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    assert_eq!(removed["not_freed"], serde_json::json!([]));
+    assert!(!mirror_dir.exists());
+    git(
+        &origin,
+        &["commit", "--quiet", "--allow-empty", "-m", "Advance main"],
+    );
+    let head = git(&origin, &["rev-parse", "HEAD"]);
+    assert_ne!(head, old_head);
+
+    let (status, second) = support::http::call(&e, Method::POST, "/projects", Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "{second}");
+    assert_ne!(first["id"], second["id"]);
+    assert_eq!(e.proj().projects.len(), 1);
+    assert!(mirror::sync(&e).await.unwrap());
+    assert_eq!(forge.boards(), [repo]);
+    assert_eq!(git(&mirror_dir, &["rev-parse", "HEAD"]), head);
+    assert!(!mirror_dir.join("old-mirror").exists());
+}
+
+#[tokio::test]
 async fn a_paused_project_with_stopped_tasks_is_removed_locally_and_github_gets_no_write() {
     use axum::http::{Method, StatusCode};
-    let (_dir, e, project, goal, tasks, forge) = fixture();
+    let forge = Arc::new(dvb_forge::FakeForge::local_git());
+    let traced = Arc::new(InterruptedForge::new(forge.clone()));
+    let (_dir, e, project, goal, tasks, _) = fixture_with(Some(traced.clone()));
     let repo = Repo("org/repo".into());
     e.append_checked(Some(&project), Actor::Engine, |_, _| {
         Ok(vec![EventKind::GoalApproved { goal: goal.clone() }])
@@ -1107,12 +1319,28 @@ async fn a_paused_project_with_stopped_tasks_is_removed_locally_and_github_gets_
     let other = paths.mirrors.join(".cache").join("other");
     std::fs::create_dir_all(&other).unwrap();
     let calls = forge.calls().len();
+    // The receipts go right after the removal event, before any file is freed.
+    let forgotten = Arc::new(std::sync::Mutex::new(None));
+    *traced.on_forget_mirror.lock().unwrap() = Some(Box::new({
+        let (e, forgotten) = (e.clone(), forgotten.clone());
+        move || {
+            *forgotten.lock().unwrap() = Some((
+                e.proj().projects.contains_key(&ProjectId::new("project")),
+                files.iter().all(|dir| dir.exists()),
+            ));
+        }
+    }));
 
     let (status, body) =
         support::http::call(&e, Method::POST, "/projects/project/remove", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["project"]["name"], "Project");
     assert_eq!(body["not_freed"], serde_json::json!([]));
+    assert_eq!(
+        *forgotten.lock().unwrap(),
+        Some((false, true)),
+        "receipts forgotten after the removal event and before the files are freed"
+    );
     for dir in [
         paths.work.join(run.as_str()),
         e.mirror("Project"),
@@ -1165,6 +1393,78 @@ async fn a_paused_project_with_stopped_tasks_is_removed_locally_and_github_gets_
         support::http::call(&e, Method::POST, "/projects/project/remove", None).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["code"], "PROJECT_UNKNOWN");
+}
+
+#[tokio::test]
+async fn remove_frees_a_toolchain_cache_a_run_left_but_not_what_its_links_point_to() {
+    use axum::http::{Method, StatusCode};
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, e, project, _goal, tasks, _) = fixture();
+    for task in &tasks {
+        state(&e, &project, task, TaskState::Cancelled);
+    }
+    let mode = |path: &std::path::Path| {
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777
+    };
+    let set = |path: &std::path::Path, mode: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    // Made as a run makes it: the engine's 2770 cache and the run's link to it,
+    // cargo's directories under umask 0002, sccache's at 2750 with 0600 entries,
+    // and a link the run planted to somewhere else.
+    let cache = e.cfg.paths.mirrors.join(".cache").join(project.as_str());
+    let run = e.cfg.paths.work.join("builder");
+    std::fs::create_dir_all(&cache).unwrap();
+    set(&cache, 0o2770);
+    std::fs::create_dir_all(&run).unwrap();
+    std::os::unix::fs::symlink(&cache, run.join("cache")).unwrap();
+    std::fs::create_dir_all(cache.join("cargo/registry")).unwrap();
+    for sub in ["cargo/registry", "cargo"] {
+        set(&cache.join(sub), 0o2775);
+    }
+    let entry = cache.join("sccache/9/2/927dffda");
+    std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+    std::fs::write(&entry, "object").unwrap();
+    set(&entry, 0o600);
+    for sub in ["sccache/9/2", "sccache/9", "sccache"] {
+        set(&cache.join(sub), 0o2750);
+    }
+    let outside = dir.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("kept"), "kept").unwrap();
+    set(&outside, 0o700);
+    std::os::unix::fs::symlink(&outside, cache.join("sccache/9/escape")).unwrap();
+
+    dvb_run::share_run(&run);
+    // The engine is in the run's group, not the owner: it can remove an entry
+    // only from a directory the group may write.
+    let mut todo = vec![cache.clone()];
+    while let Some(dir) = todo.pop() {
+        assert_eq!(mode(&dir) & 0o070, 0o070, "{}", dir.display());
+        for child in std::fs::read_dir(&dir).unwrap() {
+            let child = child.unwrap();
+            if child.file_type().unwrap().is_dir() {
+                todo.push(child.path());
+            }
+        }
+    }
+    assert_eq!(mode(&outside), 0o700);
+    std::fs::remove_dir_all(&run).unwrap();
+
+    let (status, body) =
+        support::http::call(&e, Method::POST, "/projects/project/remove", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["not_freed"], serde_json::json!([]));
+    assert!(!cache.exists());
+    assert_eq!(mode(&outside), 0o700);
+    assert_eq!(
+        std::fs::read_to_string(outside.join("kept")).unwrap(),
+        "kept"
+    );
 }
 
 #[tokio::test]
@@ -1225,4 +1525,139 @@ async fn a_project_with_running_or_open_tasks_is_not_removed() {
             .iter()
             .any(|event| matches!(event.kind, EventKind::ProjectRemoved { .. }))
     );
+}
+
+#[tokio::test]
+async fn a_remove_during_a_pass_waits_for_one_job_and_the_rest_of_the_pass_skips_the_project() {
+    use axum::http::{Method, StatusCode};
+    let barrier = Arc::new(Barrier::new(2));
+    let mut forge = InterruptedForge::new(Arc::new(dvb_forge::FakeForge::default()));
+    forge.mirror_barrier = Some(("goal", barrier.clone()));
+    let forge = Arc::new(forge);
+    let (_dir, e, project, _goal, tasks, _fake) = fixture_with(Some(forge.clone()));
+    let repo = Repo("org/repo".into());
+    for task in &tasks {
+        state(&e, &project, task, TaskState::Cancelled);
+    }
+    e.append_checked(Some(&project), Actor::Owner, |_, _| {
+        Ok(vec![EventKind::GoalStated {
+            goal: GoalId::new("later"),
+            text: "Ship more".into(),
+            from_issue: None,
+            issues: Vec::new(),
+            after: None,
+        }])
+    })
+    .unwrap();
+    let worker = e.clone();
+    let sync = tokio::spawn(async move { mirror::sync(&worker).await });
+    // The first goal's job holds its forge call open.
+    tokio::time::timeout(std::time::Duration::from_secs(2), barrier.wait())
+        .await
+        .unwrap();
+    let remover = e.clone();
+    let remove = tokio::spawn(async move {
+        support::http::call(&remover, Method::POST, "/projects/project/remove", None).await
+    });
+    // Let the remove queue on the job's lock.
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !remove.is_finished(),
+        "the remove waits for the running job"
+    );
+    barrier.wait().await;
+    let (status, body) = remove.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(sync.await.unwrap().unwrap());
+    assert_eq!(
+        *forge.mirror_writes.lock().unwrap(),
+        ["project", "goal", "task", "task"],
+        "the running job finished; the later goal's job did not start"
+    );
+    assert_eq!(forge.inner.milestones(&repo).len(), 1);
+    let events = support::events::all(&e);
+    let removed = events
+        .iter()
+        .position(|event| matches!(event.kind, EventKind::ProjectRemoved { .. }))
+        .unwrap();
+    assert_eq!(
+        events[removed + 1..]
+            .iter()
+            .filter(|event| event.project.as_ref() == Some(&project))
+            .count(),
+        0,
+        "no mirror event for the removed project"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_remove_or_repoint_that_waits_too_long_is_refused_with_the_running_pass() {
+    use axum::http::{Method, StatusCode};
+    let clock = Arc::new(FakeClock::at(Timestamp(1_791_990_000_000)));
+    let barrier = Arc::new(Barrier::new(2));
+    let fake = Arc::new(dvb_forge::FakeForge::default());
+    let mut forge = InterruptedForge::new(fake.clone());
+    forge.mirror_barrier = Some(("project", barrier.clone()));
+    let forge = Arc::new(forge);
+    let (_dir, e, project, _goal, tasks, _) =
+        fixture_with_clock(Some(forge.clone()), clock.clone());
+    for task in &tasks {
+        state(&e, &project, task, TaskState::Cancelled);
+    }
+    let (_, idle) = support::http::call(&e, Method::GET, "/status", None).await;
+    assert!(idle.get("mirror_pass").is_none(), "{idle}");
+    let (old, new) = (Repo("org/repo".into()), Repo("org/renamed".into()));
+    fake.mirror_project(&old).await.unwrap();
+    let worker = e.clone();
+    let sync = tokio::spawn(async move { mirror::sync(&worker).await });
+    barrier.wait().await;
+
+    let (_, running) = support::http::call(&e, Method::GET, "/status", None).await;
+    assert_eq!(
+        running["mirror_pass"],
+        serde_json::json!({"started": 1_791_990_000_000_i64, "project": "project"})
+    );
+    let started = "waiting for the GitHub mirror pass, started 15:00 UTC, now on project Project; nothing was changed, try again";
+    let (status, body) =
+        support::http::call(&e, Method::POST, "/projects/project/remove", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "MIRROR_PASS_RUNNING");
+    assert_eq!(body["detail"], started);
+    fake.rename_repo(&old, &new);
+    let (status, body) = support::http::call(
+        &e,
+        Method::PUT,
+        "/projects/project/repo",
+        Some(serde_json::json!({"repo": "org/renamed"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "MIRROR_PASS_RUNNING");
+    assert_eq!(body["detail"], started);
+    assert_eq!(e.proj().projects[&project].view.repo, "org/repo");
+    assert!(
+        !support::events::all(&e).iter().any(|event| matches!(
+            event.kind,
+            EventKind::ProjectRemoved { .. } | EventKind::ProjectRepoChanged { .. }
+        )),
+        "a refused remove or repoint changes nothing"
+    );
+
+    barrier.wait().await;
+    sync.await.unwrap().unwrap();
+    let (_, done) = support::http::call(&e, Method::GET, "/status", None).await;
+    assert!(done.get("mirror_pass").is_none(), "{done}");
+    let (status, body) = support::http::call(
+        &e,
+        Method::PUT,
+        "/projects/project/repo",
+        Some(serde_json::json!({"repo": "org/renamed"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) =
+        support::http::call(&e, Method::POST, "/projects/project/remove", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }

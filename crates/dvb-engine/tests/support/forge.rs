@@ -58,6 +58,8 @@ pub struct InterruptedForge {
     pub checks_barrier: Mutex<Option<Arc<Barrier>>>,
     pub main_checks_barrier: Mutex<Option<Arc<Barrier>>>,
     pub merge_barrier: Mutex<Option<Arc<Barrier>>>,
+    /// Runs once when the next mirror receipts are forgotten.
+    pub on_forget_mirror: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 impl InterruptedForge {
     pub fn new(inner: Arc<FakeForge>) -> Self {
@@ -89,6 +91,7 @@ impl InterruptedForge {
             checks_barrier: Mutex::new(None),
             main_checks_barrier: Mutex::new(None),
             merge_barrier: Mutex::new(None),
+            on_forget_mirror: Mutex::new(None),
         }
     }
 
@@ -146,6 +149,9 @@ impl Forge for InterruptedForge {
         self.inner.repoint_mirror(from, to)
     }
     fn forget_mirror(&self, repo: &Repo) -> Result<(), ForgeError> {
+        if let Some(hook) = self.on_forget_mirror.lock().unwrap().take() {
+            hook();
+        }
         self.inner.forget_mirror(repo)
     }
 

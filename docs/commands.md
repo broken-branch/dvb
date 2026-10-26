@@ -504,6 +504,9 @@ example `Work ended: crashed (exit 4: …); attempt 2 starts automatically`.
 After the counts, `dvb status` prints a `Warning:` line for each fix the engine's
 machine needs, such as run units whose version stamp is missing or differs from
 the engine's ("the run units are older than this engine: re-run install.sh").
+While the engine mirrors goals and tasks to GitHub it prints
+`GitHub mirror pass running since <time>, on project <name>`, naming the
+project whose job runs now.
 
 `dvb status --json` prints the same content as one object:
 
@@ -512,6 +515,7 @@ the engine's ("the run units are older than this engine: re-run install.sh").
  "warnings": [{"code": "cache_isolation_missing",
                "text": "the run units are older than this engine: re-run install.sh"}],
  "only": {"models": ["claude-opus-5-5"], "ends_at": 1792000000000},
+ "mirror_pass": {"started": 1791990000000, "project": "01M4…", "project_name": "example"},
  "questions": [{"id": "01M6…", "project": "01M4…", "goal": "01M5…", "task": null,
                 "subject": "Approve the plan for …?", "recommended": 1,
                 "options": [{"id": 1, "text": "Approve", "effect": "The tasks start"},
@@ -528,7 +532,8 @@ the engine's ("the run units are older than this engine: re-run install.sh").
     "title": "Approve the plan for …?", "command": "dvb answer 01M6… <n>"}]}
 ```
 
-`only` is the timed model switch, null when none is active; `warnings` is empty
+`only` is the timed model switch, null when none is active; `mirror_pass` is
+the GitHub mirror pass running now, null between passes; `warnings` is empty
 when the install needs nothing. `questions` lists every open question (of the
 project, with one), including one counted with its stopped task, whose id is
 that task item's `question`. `needs_you_items` has one entry per `Needs you:`
@@ -694,8 +699,8 @@ the model the latest builder round ran on.
 | `dvb role edit <project> <role> [...]` | Change a role: only the fields you give change; an empty `--reports-to`, `--reviewed-by` or `--group` clears it. |
 | `dvb chart <project> report\|group\|reorder\|swap ...` | Move roles on the chart: who reports to whom, groups, order, or swap a role with its lead. |
 | `dvb retire <hire-id>` | Retire a hire, keeping its record. |
-| `dvb project repo <project> <owner/name>` | Point a project at its repository's new name after a rename or transfer; goals, tasks, history and the GitHub mirror stay with it, and a name that is not the same repository is refused (`REPOSITORY_MISMATCH`). |
-| `dvb project remove <project>` | Remove a project from dvb: it leaves `project list`, status and the app and takes no goal; its work directories, mirror, toolchain cache and GitHub mirror receipts on this machine are freed, its history stays and nothing changes on GitHub. Refused while it has running or open tasks (`PROJECT_BUSY`), naming each and how to stop it. |
+| `dvb project repo <project> <owner/name>` | Point a project at its repository's new name after a rename; goals, tasks, history and the GitHub mirror stay with it, and a name that is not the same repository is refused (`REPOSITORY_MISMATCH`). Waits at most about 10 seconds for the GitHub mirror job running now; after that it is refused with nothing changed (`MIRROR_PASS_RUNNING`), saying when the pass started: try again. |
+| `dvb project remove <project>` | Remove a project from dvb: it leaves `project list`, status and the app and takes no goal; its work directories, mirror, toolchain cache and GitHub mirror receipts on this machine are freed, its history stays and nothing changes on GitHub. Refused while it has running or open tasks (`PROJECT_BUSY`), naming each and how to stop it. Stopped tasks' unpublished work on this computer is deleted. Waits at most about 10 seconds for the GitHub mirror job running now; after that it is refused with nothing removed (`MIRROR_PASS_RUNNING`), saying when the pass started: try again. |
 | `dvb project list [--json]` | List projects: name, id and repository, one per line; `--json` prints `{"projects": [...]}`, each as `project add --json` prints it. |
 
 With `--json`, `stop`, `retry` and `resume <task>` print `{"task": {...}}` as

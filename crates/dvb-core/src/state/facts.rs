@@ -323,6 +323,7 @@ impl TaskFacts {
             | EventKind::ProjectRepoUnreachable { .. }
             | EventKind::ProjectRemoved { .. }
             | EventKind::GithubMirrorObserved { .. }
+            | EventKind::GithubMirrorSent { .. }
             | EventKind::QuestionOpened { .. }
             | EventKind::QuestionAnswered { .. }
             | EventKind::QuestionClosed { .. }
