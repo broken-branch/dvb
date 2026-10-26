@@ -12,6 +12,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use dvb_core::api::{LoginCode, LoginStarted, LoginStatus, Logins};
 use dvb_core::io::write_handoff;
+use dvb_core::launcher::{UnitId, UnitState};
 use dvb_core::{RunId, Vendor};
 use std::path::Path as FsPath;
 use std::time::Duration;
@@ -19,7 +20,7 @@ use std::time::Duration;
 /// How long the first call waits for the login command's URL.
 const URL_WAIT: Duration = Duration::from_secs(60);
 /// How long the second call waits for the login to end.
-const RESULT_WAIT: Duration = Duration::from_secs(120);
+const RESULT_WAIT: Duration = Duration::from_secs(10);
 /// The prompt while the login is still going; a client asks again with an empty
 /// code (`dvb login` does).
 pub const PENDING: &str = "Still waiting for the login to finish.";
@@ -105,6 +106,9 @@ async fn poll(path: &FsPath, limit: Duration) -> Option<String> {
 }
 
 async fn begin(e: &AppState, vendor: Vendor) -> Result<LoginStarted, Fail> {
+    // Serialize replacement and start so two callers cannot leave both running.
+    let starting = e.login_starting.lock().await;
+    stop_older(e, vendor).await?;
     let run = RunId::new(e.new_id());
     let dir = e.cfg.paths.work.join(run.as_str());
     let io = |what: &str| {
@@ -131,12 +135,14 @@ async fn begin(e: &AppState, vendor: Vendor) -> Result<LoginStarted, Fail> {
     e.start_unit(vendor, &run)
         .await
         .map_err(|err| Fail::context("starting the login run", err))?;
+    drop(starting);
 
     let Some(started) = poll(&dir.join("login.json"), URL_WAIT).await else {
         // The run ended without a URL, or is still silent.
         let why = poll(&dir.join("login-result"), Duration::from_millis(500))
             .await
             .unwrap_or_else(|| "it printed nothing in time".into());
+        end_login(e, vendor, &run, &why).await?;
         return Err(Fail::internal(format!("the login run gave no URL: {why}")));
     };
     let v: serde_json::Value =
@@ -160,10 +166,7 @@ async fn finish(e: &AppState, vendor: Vendor, c: LoginCode) -> Result<LoginStart
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .filter(|_| {
             // Only a login run of this vendor, not any run's directory.
-            crate::launch::read_run_file(&dir.join("env")).is_ok_and(|env| {
-                env.contains("DVB_LOGIN=1")
-                    && env.contains(&format!("DVB_VENDOR={}\n", vendor.as_str()))
-            })
+            is_login(&dir, vendor)
         })
         .ok_or_else(|| Fail::NotFound(format!("login run {}", c.run)))?;
     let url = started["url"].as_str().unwrap_or_default().to_owned();
@@ -188,9 +191,40 @@ async fn finish(e: &AppState, vendor: Vendor, c: LoginCode) -> Result<LoginStart
             ),
         });
     }
+    let (finish_wait, timeout_prompt) = match vendor {
+        Vendor::Claude => (
+            Duration::from_secs(3 * 60),
+            "the code was not accepted; run dvb login claude again",
+        ),
+        Vendor::Codex => (
+            dvb_core::caps::LOGIN_OWNER_WAIT,
+            "the login did not finish; run dvb login codex again",
+        ),
+        Vendor::Fake => unreachable!("start_login rejects the fake vendor"),
+    };
+    let now = e.clock.now();
+    let deadline_file = dir.join("login-deadline");
+    let deadline = match crate::launch::read_run_file(&deadline_file) {
+        Ok(text) => text
+            .trim()
+            .parse::<i64>()
+            .map_err(|err| Fail::context("login deadline", err))?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let deadline = now
+                .plus_millis(i64::try_from(finish_wait.as_millis()).unwrap_or(i64::MAX))
+                .millis();
+            crate::launch::write_run_file(&deadline_file, deadline.to_string())
+                .map_err(|err| Fail::io("login deadline", err))?;
+            deadline
+        }
+        Err(err) => return Err(Fail::io("login deadline", err)),
+    };
+    let remaining = Duration::from_millis(
+        u64::try_from(deadline.saturating_sub(now.millis())).unwrap_or_default(),
+    );
     let code = c.code.trim();
     let code_file = dir.join("code");
-    if !code.is_empty() {
+    if !code.is_empty() && !remaining.is_zero() {
         write_handoff(&code_file, code).map_err(|err| Fail::io("code", err))?;
         // The run may have ended between the check and the write. It removes the
         // code after writing its result, and so do we if the result is there now:
@@ -199,7 +233,17 @@ async fn finish(e: &AppState, vendor: Vendor, c: LoginCode) -> Result<LoginStart
             let _ = std::fs::remove_file(&code_file);
         }
     }
-    let (status, prompt) = match poll(&result_file, RESULT_WAIT).await {
+    let result = poll(&result_file, RESULT_WAIT.min(remaining)).await;
+    let result = if result.is_none() && e.clock.now().millis() >= deadline {
+        end_login(e, vendor, &c.run, timeout_prompt).await?;
+        Some(
+            crate::launch::read_run_file(&result_file)
+                .map_err(|err| Fail::io("login result", err))?,
+        )
+    } else {
+        result
+    };
+    let (status, prompt) = match result {
         Some(r) => {
             let _ = std::fs::remove_file(&code_file);
             (result_status(&r), ended(&r))
@@ -212,6 +256,72 @@ async fn finish(e: &AppState, vendor: Vendor, c: LoginCode) -> Result<LoginStart
         url,
         prompt,
     })
+}
+
+fn is_login(dir: &FsPath, vendor: Vendor) -> bool {
+    crate::launch::read_run_file(&dir.join("env")).is_ok_and(|env| {
+        env.lines().any(|line| line == "DVB_LOGIN=1")
+            && env
+                .lines()
+                .any(|line| line == format!("DVB_VENDOR={}", vendor.as_str()))
+    })
+}
+
+async fn stop_older(e: &AppState, vendor: Vendor) -> Result<(), Fail> {
+    for entry in std::fs::read_dir(&e.cfg.paths.work)
+        .map_err(|err| Fail::io("login run directories", err))?
+    {
+        let entry = entry.map_err(|err| Fail::io("login run directory", err))?;
+        if !entry
+            .file_type()
+            .map_err(|err| Fail::io("login run directory", err))?
+            .is_dir()
+        {
+            continue;
+        }
+        let run = RunId::new(entry.file_name().to_string_lossy().into_owned());
+        if run.is_ulid()
+            && is_login(&entry.path(), vendor)
+            && e.unit_state(vendor, &run)
+                .await
+                .map_err(|err| Fail::context("checking the older login run", err))?
+                == UnitState::Active
+        {
+            end_login(
+                e,
+                vendor,
+                &run,
+                "a newer login was started; start a new one",
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn end_login(e: &AppState, vendor: Vendor, run: &RunId, why: &str) -> Result<(), Fail> {
+    e.launcher()
+        .stop(&UnitId {
+            vendor,
+            run: run.clone(),
+        })
+        .await
+        .map_err(|err| Fail::context("stopping the login run", err))?;
+    let dir = e.cfg.paths.work.join(run.as_str());
+    let result_file = dir.join("login-result");
+    // Preserve a result the command wrote while its stop was being requested.
+    if !result_file
+        .try_exists()
+        .map_err(|err| Fail::io("login result", err))?
+    {
+        write_handoff(&result_file, &format!("failed: {why}"))
+            .map_err(|err| Fail::io("login result", err))?;
+    }
+    match std::fs::remove_file(dir.join("code")) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(Fail::io("login code", err)),
+    }
 }
 
 fn result_status(result: &str) -> LoginStatus {
@@ -291,11 +401,14 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn silent_login_finish_reports_pending_and_keeps_the_run() {
+    async fn silent_codex_login_gets_the_owner_wait_and_keeps_the_run() {
         let dir = tempfile::tempdir().unwrap();
         let e = Engine::open(
             Config::dev(dir.path(), "unused-dvb".into()),
-            Default::default(),
+            crate::EngineOptions {
+                clock: Some(std::sync::Arc::new(dvb_core::FakeClock::default())),
+                ..Default::default()
+            },
         )
         .unwrap();
         let run = RunId::new("01M5A00000000000000000G1N0");
@@ -321,6 +434,11 @@ mod tests {
         assert_eq!(reply.status, LoginStatus::Pending);
         assert_eq!(reply.prompt, PENDING);
         assert_eq!(serde_json::to_value(reply).unwrap()["status"], "pending");
+        let deadline: i64 = std::fs::read_to_string(work.join("login-deadline"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(deadline, 15 * 60 * 1000);
     }
 
     #[tokio::test]

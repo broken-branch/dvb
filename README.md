@@ -1,134 +1,172 @@
 # dvb
 
-dvb turns approved development goals into plans, code, reviews and merged pull
-requests. Agents work in isolated runs while you approve plans, answer questions
-and follow progress from a command line or desktop cockpit. It works with private
-and public repositories in your GitHub organization or personal account.
+A team of AI coding agents that runs on your own Linux PC and works on your
+GitHub repositories.
 
-**Status:** pre-1.0: commands, settings and the cockpit may change between
-releases.
+You write a goal in a sentence or two. An AI orchestrator turns it into a plan
+and asks you to approve it. AI builders (Claude Code or Codex) then write the
+code, one pull request per task. AI reviewers check each pull request, and dvb
+merges it when the checks pass. You follow along and answer questions from the
+command line or the desktop app.
 
-**dvb merges its own work.** It merges pull requests reviewed only by its AI
-reviewers into the default branch, with no human code review. The ruleset it adds
-to each project's default branch requires pull requests, blocks force-push and
-deletion and has no bypass actors, so on an existing repository it blocks your own
-direct pushes too ([costs and GitHub effects](docs/install.md#costs-and-github-effects)).
+![The dvb app on a small demo project](docs/cockpit.png)
 
-## How it works
+**You need:**
 
-The **engine** is a system service that keeps dvb's state and talks to GitHub.
-The **cockpit** is a local web app served by the desktop service, opened in
-Chromium and connected to the engine. A **role** is a job on a project's team
-(orchestrator, builders such as `backend`, reviewers), and a **hire** is the model
-and effort it runs on. Each piece of work is
-a **run**: one Claude Code or Codex session in its own isolated systemd unit and
-checkout. The orchestrator plans a goal into tasks, builders do them in runs, AI
-reviewers check each pull request, and dvb merges it once the checks pass.
+- Arch Linux or Omarchy on x86_64, with sudo (or pkexec).
+- A GitHub account, or an organization you administer.
+- A Claude subscription for Claude Code. A Codex subscription is optional.
+  Runs use your subscription's limits. A Codex-only setup also works
+  ([details](docs/install.md#requirements-in-detail)).
+- Room to work: a run starts only while 10 GiB of memory and 25 GiB of disk are
+  free ([details](docs/install.md#requirements-in-detail)).
 
-![The dvb cockpit on a small demo project](docs/cockpit.png)
+There is no hosted service. Everything runs on your machine, and you need no
+account with the dvb authors.
 
-## Requirements
+> **dvb merges its own work.** It merges pull requests that only its AI
+> reviewers have checked. It also adds a rule to the default branch that
+> blocks direct pushes, including yours. Try it on a new repository first
+> ([what it changes on GitHub](docs/install.md#costs-and-github-effects)).
 
-- Arch Linux or Omarchy on x86_64, with systemd 255 or newer and user namespaces
-  enabled, and sudo (or pkexec).
-- Memory: each run is capped at 8 GiB and starts only while 10 GiB is available;
-  all runs together get half the RAM (at least 2 GiB, setting `runs_memory_gb`),
-  and 3 runs go at once by default (`max_runs`).
-- Disk: a run starts only while the filesystem holding `/var/lib/dvb/work` has
-  25 GiB free. Project mirrors and their caches, with the Rust and Node toolchains
-  runs fetch, live in `/var/lib/dvb/mirrors`.
-- A GitHub organization you can administer, or your personal GitHub account.
-- A public or private GitHub repository. A public repository works on any GitHub
-  plan. dvb protects each project's default branch with a ruleset, and GitHub
-  Free allows rulesets only on public repositories: on a private repository, a
-  paid plan (Team for an organization, Pro for a personal account) adds that branch
-  protection ([details](docs/commands.md#github-connection-and-project-addition)).
-- A Claude Code or Codex subscription: runs use it
-  ([costs and GitHub effects](docs/install.md#costs-and-github-effects)).
-  The Claude login is required by default, because new projects' default hires use
-  the first selected model, a Claude model unless `model_pool` lists only Codex
-  models; the Codex login is optional.
-  `dvb doctor` counts a missing login as unmet only when the default hires use its
-  vendor. One vendor alone runs every role; with both you can hire roles on either
-  vendor, and a limited vendor's runs can move to the orchestrator's vendor
-  (`vendor_fallback`) instead of waiting for its limit to reset.
+**Status:** pre-1.0. Commands, settings and the app may change between releases.
 
-The installer installs everything else that is missing with pacman
-([what it installs](docs/install.md)). There is no hosted service: the engine,
-cockpit and the GitHub App's key stay on your machines, and you need no account
-with the dvb authors.
+## Quick start
 
-## Install
+This takes you from nothing to a first merged pull request. It works on a
+personal account and on GitHub's free plan. Below, `<you>` is your GitHub login
+or organization.
 
-Download the current GitHub release's installer and install the engine and cockpit
-in one step:
+**1. Install.** This installs the engine (a system service) and the desktop app:
 
 ```sh
 curl -fsSL https://github.com/broken-branch/dvb/releases/latest/download/install.sh -o install.sh
 sudo sh install.sh --engine --cockpit
 ```
 
-Without sudo, use `pkexec sh "$PWD/install.sh" --engine --cockpit`. The installer
-verifies the release signature and checksums before writing dvb's files, and starts
-the cockpit in your session.
+Without sudo, run `pkexec sh "$PWD/install.sh" --engine --cockpit`. The
+installer checks the release's signature and checksums before writing dvb's files
+([check the installer yourself](#check-a-release)).
 
-## Connect
+**2. Make a test repository.** On GitHub, create a public repository named
+`catalogue`, with a README.
 
-1. Set a git name and email (`git config --global user.name` and `user.email`):
-   connect records them with the App.
-2. Run `dvb github connect --owner <your-org-or-user>`. It creates a private GitHub
-   App owned by your organization or personal account. Open the two links it prints
-   in a browser on this machine: on GitHub, click Create, then choose the
-   repositories the App may access and click Install. It ends with
-   `Connected to <owner>; repositories: …`.
-3. Run `dvb login claude` (and `dvb login codex` if you use Codex). They log the
-   providers into dvb's isolated environment, separate from your usual home-folder
-   CLI logins.
-
-`dvb doctor` shows what setup still needs. The app's setup wizard (`dvb app`) does
-the same steps.
-
-## A first goal
-
-This works on a personal account and on GitHub Free. On GitHub, make a public
-repository named `example` with a README, and give the dvb App access to it (the
-App's installation settings on GitHub). Then:
+**3. Connect GitHub.** dvb works through a private GitHub App that you own.
+This creates it:
 
 ```sh
-dvb project add example --repo <you>/example --no-ci
-dvb goal example "Add a search box to the catalogue"
+dvb github connect --owner <you> --repos catalogue
+```
+
+Open the two links it prints, in a browser on this machine. On the first, click
+**Create**. On the second, choose **Only select repositories**, pick
+`catalogue`, then click **Install**. The command ends with
+`Connected to <you>; repositories: …`. If it says your git name or
+email is missing, set them with `git config --global user.name "Your Name"` and
+`git config --global user.email "you@example.com"`, then run it again.
+
+**4. Log in to Claude.** Run `dvb login claude`, open the link and paste back
+the code the page shows. If you use Codex too, also run `dvb login codex` and
+enter its device code on the sign-in page. These logins belong to dvb and are separate from your own `claude` and `codex` logins.
+`dvb doctor` shows anything setup still needs.
+
+**5. Add the project and state a goal.**
+
+```sh
+dvb project add catalogue --repo <you>/catalogue --no-ci
+dvb goal catalogue "Make a one-page catalogue of five books, with a search box"
+```
+
+`--no-ci` tells dvb that the repository has no CI checks yet. `dvb goal`
+prints the goal's id.
+
+**6. Approve the plan.** Planning takes a few minutes:
+
+```sh
 dvb wait <goal-id> --until plan
 dvb answer <question-id> <n>
-dvb app
 ```
 
-`--no-ci` says the repository has no CI: a new repository has no checks for dvb to
-find, and dvb asks for a choice rather than assume none. `dvb goal` prints the goal's
-id; planning takes minutes, and `dvb wait` returns when the plan question is open
-and prints it with its numbered options. Read the plan, then answer with the number
-of the option that approves it (or the recommended one): option numbers vary per
-question.
+`dvb wait` prints the plan question and its numbered options. Read the question
+and open it in `dvb app` to see the task list, then answer with the number of the
+option that approves it. The numbers can differ from question to question.
 
-In an organization on a paid plan, dvb can create the private repository itself,
-also with no CI yet:
+**7. Wait for the merge.**
 
 ```sh
-dvb project add example --repo your-org/example --create
+dvb wait <goal-id>
 ```
 
-For an existing repository with CI, see [everyday use](docs/commands.md#everyday-use).
+When the goal is done, it prints `Merged PR #<n> …` for each merged pull request.
+If it returns earlier, answer any question with `dvb answer <question-id> <n>`
+or follow the printed retry or resume command, then run `dvb wait <goal-id>`
+again ([when something is stuck](#when-something-is-stuck)). Open the repository
+on GitHub to see the result.
+
+Prefer clicking? `dvb app` opens the desktop app. Its setup wizard does steps
+3 and 4. Open the plan question in **Needs you**, select the option that approves
+it, then click **Send answer**.
+
+## Words dvb uses
+
+- **Project**: one GitHub repository that dvb works on.
+- **Goal**: what you want done, in a sentence or two.
+- **Plan**: the goal split into tasks. Task work starts after you approve it.
+- **Task**: one piece of the plan. A completed task ends as one merged pull
+  request; dropped tasks do not.
+- **Run**: one Claude Code or Codex session working on a task, in its own
+  isolated systemd unit and checkout. Orchestrators and reviewers have runs too.
+- **Question**: something dvb needs from you, with numbered options. Open
+  questions and failed or stopped tasks that still need attention make up
+  **Needs you**; dropped or superseded work no longer counts.
+- **Role** and **hire**: a role is a job on the project's team (the
+  orchestrator, a builder such as `backend`, a reviewer). A hire is the model
+  and effort that role runs on.
+- **Engine**: the system service that keeps dvb's state and talks to GitHub.
+  **Cockpit**: the local web app served by the desktop service, opened in
+  Chromium with `dvb app` and connected to the engine.
+
+## Check a release
+
+Releases are signed with minisign. The public key is the second line of
+[release.pub](crates/dvb-engine/src/update/release.pub). With minisign installed,
+check the installer before you run it:
+
+```sh
+u=https://github.com/broken-branch/dvb/releases/latest/download
+curl -fsSL --remote-name-all $u/install.sh $u/SHA256SUMS $u/SHA256SUMS.minisig
+key=$(curl -fsSL https://raw.githubusercontent.com/broken-branch/dvb/main/crates/dvb-engine/src/update/release.pub | sed -n 2p)
+minisign -Vm SHA256SUMS -P "$key"
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+## When something is stuck
+
+- `dvb doctor`: what setup still needs, with the command that fixes each item.
+- `dvb status`: what is running, what needs you, and warnings about the install.
+- A failed task: `dvb retry <task>`. A stopped one: `dvb resume <task>`.
+- The engine's log: `sudo journalctl -u dvb.service -u 'dvb-run-*'`.
+- `dvb report bug --title "<title>" "<what happened>"` prepares an issue and
+  prints the link that opens it.
+
+Update with `dvb update`. To remove dvb, see [Remove dvb](docs/install.md#remove-dvb).
 
 ## More
 
-- [Installation details](docs/install.md): separate engine and desktop, installed
-  files, costs and GitHub effects, security, removal, forks and how runs get
-  toolchains.
-- [Command reference](docs/commands.md): everyday use, goals from issues, checks,
-  model selection, hires and settings. `dvb --help` lists all commands.
-- [Agent skill](skills/dvb/SKILL.md): drive dvb from a coding agent with a shell
-  using JSON output and exit codes. Install it by copying `skills/dvb` to
-  `~/.claude/skills/dvb` for Claude Code, or to `~/.codex/skills/dvb` for Codex.
-- [Omarchy bar widget](https://github.com/broken-branch/omarchy-dvb#readme): a bar icon that shows when dvb
-  needs you.
-- [Contributing](CONTRIBUTING.md) and [security](SECURITY.md). Licence:
-  [MIT](LICENSE).
+Use dvb:
+
+- [Installation details](docs/install.md): requirements, separate engine and
+  desktop, installed files, costs and GitHub effects, update, removal.
+- [Command reference](docs/commands.md). `dvb --help` lists every command.
+- [Agent skill](skills/dvb/SKILL.md): let Claude Code or Codex drive dvb. Copy
+  `skills/dvb` to `~/.claude/skills/dvb` or `~/.codex/skills/dvb`.
+- [Omarchy bar widget](https://github.com/broken-branch/omarchy-dvb#readme):
+  shows when dvb needs you.
+
+Work on dvb:
+
+- [Contributing](CONTRIBUTING.md), [testing](docs/testing.md) and
+  [code maps](docs/map/README.md). `AGENTS.md`, `.agents/`, `.claude/`,
+  `prompts/` and `contracts/` are instructions for the agents that build dvb
+  and the contracts they keep.
+- [Security](SECURITY.md). Licence: [MIT](LICENSE).

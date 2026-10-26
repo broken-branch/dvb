@@ -9,6 +9,7 @@ form (a private security advisory), not in a public issue.
 ## Supported versions
 
 Fixes go to the latest release. Install it with `dvb update`.
+The public signing key is in [release.pub](crates/dvb-engine/src/update/release.pub); see [Check a release](README.md#check-a-release) for verification.
 
 ## Projects on one install
 

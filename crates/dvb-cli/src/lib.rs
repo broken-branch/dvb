@@ -658,6 +658,20 @@ fn shell_word(text: &str) -> String {
     }
 }
 
+fn project_not_freed(left: &str, project: &dvb_core::ProjectId) -> String {
+    let mut text = format!("dvb: not freed: {left}");
+    let cache = std::path::Path::new("mirrors/.cache").join(project.as_str());
+    if let Some((path, _error)) = left.rsplit_once(": ")
+        && std::path::Path::new(path).ends_with(cache)
+    {
+        text.push_str(&format!(
+            "\ndvb: This folder was made by an older dvb and can be deleted as root: sudo rm -rf {}",
+            shell_word(path)
+        ));
+    }
+    text
+}
+
 /// Runs a verb; the exit code.
 pub async fn main(target: &Target, verb: Verb) -> i32 {
     let client = Client::new(target.sock());
@@ -1117,7 +1131,7 @@ async fn run(target: &Target, client: &Client, verb: Verb) -> Result<i32, CliErr
             }
             if !removal.not_freed.is_empty() {
                 for left in &removal.not_freed {
-                    eprintln!("dvb: not freed: {left}");
+                    eprintln!("{}", project_not_freed(left, &removal.project.id));
                 }
                 return Ok(1);
             }
@@ -1584,7 +1598,7 @@ async fn login(client: &Client, vendor: Vendor) -> Result<(), CliError> {
         String::new()
     };
     let run = started.run;
-    let done = finish_login(code, |code| {
+    let done = finish_login(vendor, code, |code| {
         let run = run.clone();
         let path = path.clone();
         async move { client.post(&path, &LoginCode { run, code }).await }
@@ -1603,13 +1617,39 @@ async fn login(client: &Client, vendor: Vendor) -> Result<(), CliError> {
 
 /// Sends the code once, then asks again with an empty code while the engine says
 /// the login is still pending (a device login can take the owner minutes).
-pub async fn finish_login<F, Fut>(code: String, mut send: F) -> Result<LoginStarted, CliError>
+pub async fn finish_login<F, Fut>(
+    vendor: Vendor,
+    code: String,
+    send: F,
+) -> Result<LoginStarted, CliError>
 where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = Result<LoginStarted, CliError>>,
 {
+    finish_login_with_output(vendor, code, send, |prompt| {
+        write_stdout(format_args!("{prompt}\n"))
+    })
+    .await
+}
+
+async fn finish_login_with_output<F, Fut>(
+    vendor: Vendor,
+    code: String,
+    mut send: F,
+    mut output: impl FnMut(&str) -> Result<(), CliError>,
+) -> Result<LoginStarted, CliError>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<LoginStarted, CliError>>,
+{
+    if vendor == Vendor::Claude && code.trim().is_empty() {
+        return Err(CliError::Message(
+            "No code entered; run dvb login claude again.".into(),
+        ));
+    }
     let mut done = send(code).await?;
     while done.status == dvb_core::api::LoginStatus::Pending {
+        output(&done.prompt)?;
         done = send(String::new()).await?;
     }
     if done.status == dvb_core::api::LoginStatus::LoggedIn {
@@ -1880,7 +1920,10 @@ fn status_text(v: &StatusView) -> String {
             .unwrap_or_default();
         out.push_str(&format!(
             "GitHub mirror pass running since {}{on}\n",
-            local_time(pass.started)
+            chrono::DateTime::from_timestamp_millis(pass.started.millis()).map_or_else(
+                || pass.started.millis().to_string(),
+                |time| time.format("%H:%M UTC").to_string(),
+            )
         ));
     }
     if let Some(only) = &v.only {
@@ -2264,7 +2307,7 @@ mod tests {
         }))
         .unwrap();
         let started = Timestamp(1_791_990_000_000);
-        let view = StatusView {
+        let mut view = StatusView {
             status: Status {
                 running: 0,
                 needs_you: 0,
@@ -2284,10 +2327,8 @@ mod tests {
             projects: vec![project],
         };
         assert!(
-            status_text(&view).contains(&format!(
-                "GitHub mirror pass running since {}, on project example\n",
-                local_time(started)
-            )),
+            status_text(&view)
+                .contains("GitHub mirror pass running since 15:00 UTC, on project example\n"),
             "{}",
             status_text(&view)
         );
@@ -2295,6 +2336,42 @@ mod tests {
             status_json(&view).unwrap()["mirror_pass"],
             serde_json::json!({"started": 1_791_990_000_000_i64, "project": "01M4", "project_name": "example"})
         );
+        view.status.mirror_pass.as_mut().unwrap().project = None;
+        assert!(status_text(&view).contains("GitHub mirror pass running since 15:00 UTC\n"));
+        assert!(!status_text(&view).contains("on project"));
+        assert_eq!(
+            status_json(&view).unwrap()["mirror_pass"],
+            serde_json::json!({"started": 1_791_990_000_000_i64, "project": null, "project_name": null})
+        );
+    }
+
+    #[test]
+    fn project_removal_gives_a_next_step_only_for_the_project_toolchain_cache() {
+        let project = ProjectId::new("01M4");
+        for root in ["/var/lib/dvb", "/tmp/dev engine's"] {
+            let path = format!("{root}/mirrors/.cache/{project}");
+            let left = format!("{path}: Permission denied (os error 13)");
+            assert_eq!(
+                project_not_freed(&left, &project),
+                format!(
+                    "dvb: not freed: {left}\ndvb: This folder was made by an older dvb and can be deleted as root: sudo rm -rf {}",
+                    shell_word(&path)
+                )
+            );
+        }
+        for path in [
+            "/var/lib/dvb/work/run",
+            "/var/lib/dvb/mirrors/example",
+            "/var/lib/dvb/mirrors/.cache/other",
+            "/var/lib/dvb/mirrors/.cache-other/01M4",
+            "github-mirror.json",
+        ] {
+            let left = format!("{path}: Permission denied (os error 13)");
+            assert_eq!(
+                project_not_freed(&left, &project),
+                format!("dvb: not freed: {left}")
+            );
+        }
     }
 
     #[test]
@@ -2632,7 +2709,7 @@ mod tests {
     async fn login_status_controls_polling_independently_of_english_prompts() {
         use dvb_core::api::LoginStatus;
         let calls = std::cell::RefCell::new(Vec::new());
-        let done = finish_login("abc".into(), |code| {
+        let done = finish_login(Vendor::Claude, "abc".into(), |code| {
             calls.borrow_mut().push(code);
             let status = if calls.borrow().len() < 3 {
                 LoginStatus::Pending
@@ -2653,7 +2730,7 @@ mod tests {
         assert_eq!(done.status, LoginStatus::LoggedIn);
         assert_eq!(*calls.borrow(), ["abc", "", ""]);
         let mut failure_polls = 0;
-        let failed = finish_login(String::new(), |_| {
+        let failed = finish_login(Vendor::Codex, String::new(), |_| {
             failure_polls += 1;
             async move {
                 Ok(LoginStarted {
@@ -2668,6 +2745,61 @@ mod tests {
         .unwrap();
         assert_eq!(failed.status, LoginStatus::Failed);
         assert_eq!(failure_polls, 1);
+    }
+
+    #[tokio::test]
+    async fn empty_claude_code_stops_before_sending() {
+        for code in ["", "\n", "  \t\n"] {
+            let result = finish_login(Vendor::Claude, code.into(), |_| async {
+                panic!("an empty Claude code must never be sent")
+            })
+            .await;
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "No code entered; run dvb login claude again."
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_pending_round_prints_the_engine_prompt() {
+        use dvb_core::api::LoginStatus;
+        let mut rounds = 0;
+        let mut prompts = Vec::new();
+        let done = finish_login_with_output(
+            Vendor::Claude,
+            "code".into(),
+            |_| {
+                rounds += 1;
+                let status = if rounds < 4 {
+                    LoginStatus::Pending
+                } else {
+                    LoginStatus::Failed
+                };
+                async move {
+                    Ok(LoginStarted {
+                        run: dvb_core::RunId::new("r"),
+                        url: String::new(),
+                        prompt: if status == LoginStatus::Pending {
+                            "Still waiting for the login to finish."
+                        } else {
+                            "the code was not accepted; run dvb login claude again"
+                        }
+                        .into(),
+                        status,
+                    })
+                }
+            },
+            |prompt| {
+                prompts.push(prompt.to_owned());
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(prompts, vec!["Still waiting for the login to finish."; 3]);
+        assert_eq!(done.status, LoginStatus::Failed);
+        assert_eq!(rounds, 4);
     }
 
     #[test]

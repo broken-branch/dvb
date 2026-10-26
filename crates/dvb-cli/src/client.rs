@@ -490,7 +490,10 @@ mod tests {
         server.await.unwrap();
     }
 
-    #[tokio::test(start_paused = true)]
+    // Real time: a paused clock jumps to the guard below whenever the fixture's
+    // disconnect reaches the client late, as when a child another test forks
+    // still holds the socket until it execs.
+    #[tokio::test]
     async fn filtered_watch_follows_global_tail_and_reconnects_without_duplicates() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("engine.sock");

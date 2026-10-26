@@ -1,9 +1,46 @@
 # Installation details
 
-The [first-use guide](../README.md) covers requirements, current-release installation,
+The [README](../README.md) covers requirements, current-release installation,
 setup and a first goal. This page covers what the installer does, a separate engine
 and desktop, installed files, costs and GitHub effects, security, complete removal,
 forks, and how runs get toolchains.
+
+## Requirements in detail
+
+- Arch Linux or Omarchy on x86_64, with systemd 255 or newer and user namespaces
+  enabled, and sudo (or pkexec).
+- Memory: each run is capped at 8 GiB and starts only while 10 GiB is available;
+  all runs together get half the RAM (at least 2 GiB, setting `runs_memory_gb`),
+  and 3 runs go at once by default (`max_runs`).
+- Disk: a run starts only while the filesystem holding `/var/lib/dvb/work` has
+  25 GiB free. Local copies of your repositories (and their caches) live in
+  `/var/lib/dvb/mirrors`, along with the Rust and Node toolchains runs fetch.
+- A GitHub organization you can administer, or your personal GitHub account.
+- A public or private GitHub repository. A public repository works on any GitHub
+  plan. dvb protects each project's default branch with a ruleset, and GitHub
+  Free allows rulesets only on public repositories: on a private repository, a
+  paid plan (Team for an organization, Pro for a personal account) adds that branch
+  protection ([details](commands.md#github-connection-and-project-addition)).
+- A Claude Code or Codex subscription: runs use it
+  ([costs and GitHub effects](#costs-and-github-effects)).
+  The Claude login is required by default, because new projects' default hires use
+  the first selected model, a Claude model unless `model_pool` lists only Codex
+  models; the Codex login is optional.
+  `dvb doctor` counts a missing login as unmet only when the default hires use its
+  vendor. One vendor alone runs every role; with both you can hire roles on either
+  vendor, and a limited vendor's runs can move to the orchestrator's vendor
+  (`vendor_fallback`) instead of waiting for its limit to reset.
+
+The installer installs missing prerequisites with pacman. On other distributions,
+without pacman, the installer stops before changing anything if a tool it uses is
+missing, and lists those tools for you to install yourself. The CLIs, Chromium
+and toolchain managers are not installed: it names those runs cannot find and carries on with the install.
+Existing system Rust is kept and runs use it. Runs build with the toolchain a
+project pins ([how runs get toolchains](#how-runs-get-toolchains)).
+
+The engine, cockpit and the GitHub App's key stay on your machines.
+
+## What the installer does
 
 `sudo sh install.sh --engine --cockpit` (or `pkexec sh "$PWD/install.sh" --engine
 --cockpit`) is the only step on the machine. Run as root, it checks each missing
@@ -20,17 +57,11 @@ nothing in it runs during the install. systemd is checked, not installed.
 On Arch, installing rustup replaces conflicting system Rust packages automatically,
 so runs can fetch a project's pinned toolchain even when system cargo was present.
 
-Without pacman, the installer stops before changing anything if a tool it uses is
-missing, and lists those tools. The CLIs, Chromium and toolchain managers are not
-installed: it names those runs cannot find and carries on with the install.
-Existing system Rust is kept and runs use it. Runs build with the toolchain a
-project pins ([how runs get toolchains](#how-runs-get-toolchains)).
-
 On Omarchy, the cockpit adds a dvb submenu to
 `~/.config/omarchy/extensions/omarchy-menu.jsonc` at its first start, once: into a
 missing menu or one holding only comments; otherwise it prints the block to add by
 hand. Open **dvb → New goal** or **dvb → Answer a question** from the menu and press
-the voxtype key to dictate into the text box.
+Omarchy's dictation key to dictate into the text box.
 
 ## Separate engine and desktop
 
@@ -83,10 +114,28 @@ session (`systemctl --global enable`), runs them only for the `--owner` account
 they start at its next login. The cockpit's control socket is
 `$XDG_RUNTIME_DIR/dvb-desk.sock` (normally under `/run/user/<uid>`).
 
-Updates verify signatures and checksums, back up state and move `current` to the
-new version. Installing over an existing engine also backs up its database.
+Installing over an existing engine also backs up its database.
 `state/publication.json` holds the identity dvb publishes commits as
 ([settings](commands.md#settings)).
+
+## Update
+
+`dvb update` installs the newest release. It waits up to 30 seconds for running
+work, then stops any remaining task runs and resumes those tasks once after
+restart (also after a rollback). Owner stops and other engine stops stay stopped. A paused project
+keeps update stops pending until unpause without reserving a run slot. When the
+engine returns, the output reports whether every task run finished or how many
+were stopped, resumed, or remain pending automatic resume.
+
+`dvb update --check` only checks whether a newer release exists.
+`dvb update --to <version>` installs that version (going back needs the same
+database schema).
+Updates verify signatures and checksums, back up state and move `current` to the
+new version.
+
+`dvb update` replaces only the binary, never the run units. `dvb status` warns
+when the run units are older than the engine: re-run the current release's
+`install.sh` to update them.
 
 ## Costs and GitHub effects
 

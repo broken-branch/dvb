@@ -108,7 +108,7 @@ Releases are for maintainers only.
    release assets. Hyphenated tags are prereleases; other tags are stable releases.
 4. Installed machines use `dvb update [--to X.Y.Z]`. Verified updates drain work,
    back up data and roll back on failure. Bootstrap older installs with the
-   candidate release's installer; see [requirements](../README.md#requirements).
+   candidate release's installer; see [requirements](install.md#requirements-in-detail).
 
 A maintainer runs the dispatch-only [stranger check](../.github/workflows/stranger.yml)
 by hand to check a published release (`gh workflow run stranger.yml`): on GitHub-hosted

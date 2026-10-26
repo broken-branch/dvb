@@ -487,7 +487,7 @@ async fn cli_login_recognizes_a_result_written_before_the_completion_poll() {
     .unwrap();
     for result in ["ok", "failed: denied"] {
         std::fs::write(work.join("login-result"), result).unwrap();
-        let done = dvb_cli::finish_login(String::new(), |code| {
+        let done = dvb_cli::finish_login(dvb_core::Vendor::Codex, String::new(), |code| {
             let e = e.clone();
             let body = json!(LoginCode {
                 run: run.clone(),
@@ -860,4 +860,122 @@ async fn partial_role_save_preserves_current_fields_and_explicit_nulls_clear_ass
         "Catalogue architect"
     );
     assert_eq!(event_count(&e), before);
+}
+
+#[tokio::test(start_paused = true)]
+async fn pending_login_stops_at_the_deadline_and_reports_failure() {
+    use dvb_core::api::{LoginStarted, LoginStatus};
+    use dvb_core::{FakeClock, RunId, Vendor};
+    use std::sync::Arc;
+    let clock = Arc::new(FakeClock::default());
+    let launcher = Arc::new(support::launcher::FakeLauncher::default());
+    let (dir, e) = engine(dvb_engine::EngineOptions {
+        clock: Some(clock.clone()),
+        launcher: Some(launcher.clone()),
+        ..Default::default()
+    });
+    let run = RunId::new("01M5A00000000000000000G1N0");
+    let work = e.cfg.paths.work.join(run.as_str());
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("env"), "DVB_LOGIN=1\nDVB_VENDOR=claude\n").unwrap();
+    std::fs::write(
+        work.join("login.json"),
+        r#"{"url":"https://example.test/login"}"#,
+    )
+    .unwrap();
+    launcher.running(run.as_str());
+    let mut rounds = 0;
+    let done = dvb_cli::finish_login(Vendor::Claude, "wrong".into(), |code| {
+        rounds += 1;
+        assert!(rounds <= 20, "pending login must be bounded");
+        if rounds > 1 {
+            clock.advance_millis(10_000);
+        }
+        let e = e.clone();
+        let body = json!({"run":run,"code":code});
+        async move {
+            let (status, value) = call(&e, Method::POST, "/logins/claude", Some(body)).await;
+            assert_eq!(status, StatusCode::OK);
+            Ok(serde_json::from_value::<LoginStarted>(value).unwrap())
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(done.status, LoginStatus::Failed);
+    assert!(
+        done.prompt
+            .contains("the code was not accepted; run dvb login claude again")
+    );
+    assert!(!launcher.is_active(&run));
+    assert!(!work.join("code").exists());
+    assert!(work.join("login-result").exists());
+    drop(dir);
+}
+
+#[tokio::test]
+async fn a_second_begin_stops_only_earlier_active_logins_of_the_same_vendor() {
+    use dvb_core::{RunId, Vendor};
+    use std::sync::Arc;
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    let start_work = work.clone();
+    let launcher = Arc::new(support::launcher::FakeLauncher {
+        start_hook: Some(Arc::new(move |unit| {
+            std::fs::write(
+                start_work.join(unit.run.as_str()).join("login.json"),
+                r#"{"url":"https://example.test/login"}"#,
+            )
+            .unwrap();
+            Ok(())
+        })),
+        ..Default::default()
+    });
+    let e = support::engine::open_with(
+        dir.path(),
+        "dvb",
+        dvb_engine::EngineOptions {
+            launcher: Some(launcher.clone()),
+            ..Default::default()
+        },
+    );
+    let begin = |vendor: Vendor| {
+        let e = e.clone();
+        async move {
+            let (status, value) = call(
+                &e,
+                Method::POST,
+                &format!("/logins/{}", vendor.as_str()),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{value}");
+            serde_json::from_value::<dvb_core::api::LoginStarted>(value)
+                .unwrap()
+                .run
+        }
+    };
+    let first = begin(Vendor::Claude).await;
+    let other = begin(Vendor::Codex).await;
+    let ordinary = RunId::new("01M5A00000000000000000G1N0");
+    std::fs::create_dir_all(work.join(ordinary.as_str())).unwrap();
+    std::fs::write(
+        work.join(ordinary.as_str()).join("env"),
+        "DVB_VENDOR=claude\n",
+    )
+    .unwrap();
+    launcher.running(ordinary.as_str());
+    let second = begin(Vendor::Claude).await;
+    assert!(!launcher.is_active(&first));
+    assert!(launcher.is_active(&second));
+    assert!(launcher.is_active(&other));
+    assert!(launcher.is_active(&ordinary));
+    let (_, value) = call(
+        &e,
+        Method::POST,
+        "/logins/claude",
+        Some(json!({"run":first,"code":"late"})),
+    )
+    .await;
+    assert_eq!(value["status"], "failed");
+    assert!(!work.join(first.as_str()).join("code").exists());
 }

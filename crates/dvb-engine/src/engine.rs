@@ -303,6 +303,7 @@ pub struct Engine {
     /// What the update protocol tells the rest of the engine.
     pub update: crate::update::State,
     pub(crate) github_setup: tokio::sync::Mutex<()>,
+    pub(crate) login_starting: tokio::sync::Mutex<()>,
     pub(crate) github_wait: Arc<dvb_forge::Wait>,
     pub(crate) github_setup_client: Mutex<Option<(String, dvb_forge::github_setup::Client)>>,
     /// Held for one project or goal job of a mirror pass, and by a project's
@@ -480,6 +481,7 @@ impl Engine {
             publication: Mutex::new(publication),
             update: crate::update::State::default(),
             github_setup: tokio::sync::Mutex::new(()),
+            login_starting: tokio::sync::Mutex::new(()),
             github_wait,
             github_setup_client: Mutex::new(None),
             mirror_retries: tokio::sync::Mutex::new(crate::publish::mirror::Retries::default()),

@@ -264,8 +264,28 @@ fn mirrorable(e: &AppState, project: &ProjectId, repo: &Repo) -> bool {
         .is_some_and(|p| !p.view.paused && p.view.repo == repo.0)
 }
 
+struct Job<'a> {
+    e: &'a AppState,
+    retries: tokio::sync::MutexGuard<'a, Retries>,
+}
+
+impl Drop for Job<'_> {
+    fn drop(&mut self) {
+        // Clear the project before releasing the lock to the next job.
+        if let Some(pass) = self
+            .e
+            .mirror_pass
+            .lock()
+            .unwrap_or_else(dvb_core::sync::recover)
+            .as_mut()
+        {
+            pass.project = None;
+        }
+    }
+}
+
 /// Takes the mirror lock for one job and marks the pass as on its project.
-async fn job<'a>(e: &'a AppState, project: &ProjectId) -> tokio::sync::MutexGuard<'a, Retries> {
+async fn job<'a>(e: &'a AppState, project: &ProjectId) -> Job<'a> {
     let retries = e.mirror_retries.lock().await;
     if let Some(pass) = e
         .mirror_pass
@@ -275,7 +295,7 @@ async fn job<'a>(e: &'a AppState, project: &ProjectId) -> tokio::sync::MutexGuar
     {
         pass.project = Some(project.clone());
     }
-    retries
+    Job { e, retries }
 }
 
 /// How long a project's remove or repoint waits for the running job; well
@@ -526,18 +546,18 @@ async fn project_jobs(
         .map(|p| (p.view.id.clone(), Repo(p.view.repo.clone())))
         .collect::<Vec<_>>();
     for (project, repo) in repos {
-        let mut retries = job(e, &project).await;
+        let mut job = job(e, &project).await;
         if !mirrorable(e, &project, &repo) {
             continue;
         }
         let key = MirrorKey::Project(project.clone());
         let input = MirrorInput::Project(repo.clone());
-        if !retries.due(&key, &input, e.clock.now()) {
+        if !job.retries.due(&key, &input, e.clock.now()) {
             healthy = false;
             continue;
         }
-        let result = scan_and_mirror(e, forge, &mut retries, key, input).await;
-        drop(retries);
+        let result = scan_and_mirror(e, forge, &mut job.retries, key, input).await;
+        drop(job);
         if let Err(error) = result {
             healthy = false;
             eprintln!("dvb engine: GitHub project mirror: {error}");
@@ -553,7 +573,7 @@ async fn goal_job(
     snapshot: GoalSnapshot,
 ) -> Result<bool, Fail> {
     let (project, goal, repo, text, mut mirror, tasks) = snapshot;
-    let mut retries = job(e, &project).await;
+    let mut job = job(e, &project).await;
     // Recheck after every awaited forge operation: an in-flight write may
     // finish during a pause, but it must not start the next one.
     if !mirrorable(e, &project, &repo) {
@@ -599,10 +619,10 @@ async fn goal_job(
     } else {
         let key = MirrorKey::Goal(goal.clone());
         let input = MirrorInput::Goal(repo.clone(), mirror);
-        if !retries.due(&key, &input, e.clock.now()) {
+        if !job.retries.due(&key, &input, e.clock.now()) {
             return Ok(false);
         }
-        match scan_and_mirror(e, forge, &mut retries, key, input).await {
+        match scan_and_mirror(e, forge, &mut job.retries, key, input).await {
             Ok(number) => {
                 observed(e, observations, &project, &goal, None, Ok(()))?;
                 let sent = Receipt {
@@ -625,14 +645,14 @@ async fn goal_job(
     let all_mirrored = task_jobs(
         e,
         forge,
-        &mut retries,
+        &mut job.retries,
         observations,
         (&project, &goal, &repo),
         milestone,
         tasks,
     )
     .await?;
-    drop(retries);
+    drop(job);
     Ok(all_mirrored)
 }
 
@@ -802,6 +822,54 @@ pub async fn watch(e: AppState) {
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => all = true,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Config, Engine};
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn status(e: &AppState) -> dvb_core::api::Status {
+        let response = crate::api::router(e.clone())
+            .oneshot(Request::get("/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn status_has_no_project_between_mirror_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = Engine::open(Config::dev(dir.path(), "dvb".into()), Default::default()).unwrap();
+        let started = Timestamp(1_791_990_000_000);
+        *e.mirror_pass.lock().unwrap() = Some(dvb_core::api::MirrorPass {
+            started,
+            project: None,
+        });
+        for id in ["first", "second"] {
+            let project = ProjectId::new(id);
+            let held = job(&e, &project).await;
+            let running = status(&e).await;
+            assert_eq!(running.mirror_pass.unwrap().project, Some(project));
+            drop(held);
+            assert!(e.mirror_retries.try_lock().is_ok());
+            let between = status(&e).await;
+            assert_eq!(
+                between.mirror_pass,
+                Some(dvb_core::api::MirrorPass {
+                    started,
+                    project: None
+                })
+            );
         }
     }
 }

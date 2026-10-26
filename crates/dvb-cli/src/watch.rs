@@ -369,7 +369,10 @@ mod tests {
         assert!(lines.iter().all(|line| line.lines().count() == 1));
     }
 
-    #[tokio::test(start_paused = true)]
+    // Real time: a paused clock jumps to the guard below whenever the fixture's
+    // disconnect reaches the client late, as when a child another test forks
+    // still holds the socket until it execs.
+    #[tokio::test]
     async fn context_disconnect_retries_the_unrendered_event() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("engine.sock");

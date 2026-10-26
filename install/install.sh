@@ -447,5 +447,5 @@ EOF
 fi
 
 if command -v omarchy >/dev/null 2>&1; then
-  echo "Omarchy bar widget: omarchy plugin add https://github.com/broken-branch/omarchy-dvb"
+  echo "Omarchy bar widget: omarchy plugin add https://github.com/broken-branch/omarchy-dvb --enable"
 fi

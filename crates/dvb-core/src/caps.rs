@@ -15,6 +15,9 @@ pub const BRANCH_REPAIRS_PER_TASK: u8 = 3;
 pub const ROUTINE_SEND_BACKS: u8 = 2;
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// How long the owner may take to finish a vendor login.
+pub const LOGIN_OWNER_WAIT: Duration = Duration::from_secs(15 * 60);
+
 /// After a reviewer's verdict and its last output, how long its unit may
 /// stay up before the engine ends it as finished.
 pub const REVIEWER_GRACE: Duration = Duration::from_secs(60);

@@ -36,7 +36,7 @@ impl Default for Waits {
     fn default() -> Self {
         Self {
             url: Duration::from_secs(45),
-            owner: Duration::from_secs(15 * 60),
+            owner: dvb_core::caps::LOGIN_OWNER_WAIT,
         }
     }
 }
