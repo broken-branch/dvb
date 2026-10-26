@@ -1,6 +1,6 @@
 import type { paths, components } from '@/api/schema';
 
-type Reply<O> = O extends { responses: infer R }
+export type Reply<O> = O extends { responses: infer R }
   ? {
       [K in Extract<keyof R, 200 | 201 | 202 | 204>]: R[K] extends {
         content: { 'application/json': infer T };

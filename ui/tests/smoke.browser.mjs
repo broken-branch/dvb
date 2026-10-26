@@ -156,6 +156,17 @@ try {
       );
     }
   }
+  if (process.env.DVB_DEMO_DIR) {
+    // The README screenshot: a demo project with real model ids, at README framing.
+    const { demoResponses } = await server.ssrLoadModule('/tests/support/demo-fixtures.ts');
+    Object.assign(fixtures, demoResponses);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`${base}#project/catalogue`);
+    await page.reload();
+    await page.locator('.kanban-column').first().waitFor();
+    await page.evaluate(() => document.fonts.ready);
+    await page.screenshot({ path: `${process.env.DVB_DEMO_DIR}/cockpit.png` });
+  }
   assert.deepEqual(errors, []);
   console.log(
     `Browser smoke passed: ${routes.length} routes, Company cards and setup screens at desktop and mobile widths.`,

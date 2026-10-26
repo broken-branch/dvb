@@ -75,6 +75,7 @@ installed acceptance requires a disposable systemd/polkit install with sudo and
 Run browsers only when the assigned task requires them. Real-provider checks
 are opt-in via `--provider claude|codex` with `DVB_E2E_PROJECT`; they need a
 configured, dedicated idle project and consume model usage.
+`(cd ui && DVB_DEMO_DIR=<dir> npm run test:browser)` also writes `<dir>/cockpit.png`; `magick <dir>/cockpit.png -strip +dither -colors 256 PNG8:docs/cockpit.png` makes the README screenshot from it.
 
 `scripts/run-upgrade.sh` has `seed`, `bootstrapped <version>` and
 `cases <broken> <other-key> <good>` stages. Follow CI's candidate preparation on

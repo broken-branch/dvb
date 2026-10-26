@@ -58,17 +58,21 @@ This creates it:
 dvb github connect --owner <you> --repos catalogue
 ```
 
-Open the two links it prints, in a browser on this machine. On the first, click
-**Create**. On the second, choose **Only select repositories**, pick
-`catalogue`, then click **Install**. The command ends with
+Open the one link it prints first in a browser on this machine, then click
+**Create GitHub App** on GitHub. The browser returns through the dvb desktop app
+and opens GitHub's installation page automatically. If it doesn't, open the
+install link printed by the command. Choose **Only select repositories**, pick
+`catalogue`, then click **Install**. If you left out `catalogue`, follow the
+printed `Give the App access to …` link to add it. The command ends with
 `Connected to <you>; repositories: …`. If it says your git name or
 email is missing, set them with `git config --global user.name "Your Name"` and
 `git config --global user.email "you@example.com"`, then run it again.
 
-**4. Log in to Claude.** Run `dvb login claude`, open the link and paste back
-the code the page shows. If you use Codex too, also run `dvb login codex` and
-enter its device code on the sign-in page. These logins belong to dvb and are separate from your own `claude` and `codex` logins.
-`dvb doctor` shows anything setup still needs.
+**4. Log in to Claude.** Run `dvb login claude`, open the link, sign in and paste
+the code the page shows at the terminal's `Code:` prompt. If you use Codex too,
+run `dvb login codex`, open the link, sign in and enter the device code printed
+by the command on that page. These logins belong to dvb and are separate from
+your own `claude` and `codex` logins; `dvb doctor` shows anything setup still needs.
 
 **5. Add the project and state a goal.**
 
@@ -87,9 +91,10 @@ dvb wait <goal-id> --until plan
 dvb answer <question-id> <n>
 ```
 
-`dvb wait` prints the plan question and its numbered options. Read the question
-and open it in `dvb app` to see the task list, then answer with the number of the
-option that approves it. The numbers can differ from question to question.
+`dvb wait` prints the plan question, its task list and numbered answer options.
+The `<question-id>` is after `Question` on the first line. Read the plan, then
+answer with the number of the option that approves it. The option numbers can
+differ from question to question.
 
 **7. Wait for the merge.**
 
