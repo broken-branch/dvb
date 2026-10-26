@@ -1,7 +1,8 @@
 # dvb
 
 A team of AI coding agents that runs on your own Linux PC and works on your
-GitHub repositories.
+GitHub repositories; on Omarchy it follows your desktop theme
+([see it](#omarchy-themes)).
 
 You write a goal in a sentence or two. An AI orchestrator turns it into a plan
 and asks you to approve it. AI builders (Claude Code or Codex) then write the
@@ -130,6 +131,30 @@ it, then click **Send answer**.
 - **Engine**: the system service that keeps dvb's state and talks to GitHub.
   **Cockpit**: the local web app served by the desktop service, opened in
   Chromium with `dvb app` and connected to the engine.
+
+## Omarchy themes
+
+On Omarchy, the app follows your desktop theme by default (Settings → Colour
+theme → "Auto / follow Omarchy"). Switching the Omarchy theme recolours dvb right
+away, without a reload. It also ships palettes named after Omarchy's themes,
+which you can pick there.
+
+<table>
+  <tr>
+    <td width="33%" align="center">
+      <a href="docs/themes/tokyo-night.png"><img src="docs/themes/tokyo-night.png" alt="The dvb app in Tokyo Night" width="100%"></a><br>
+      Tokyo Night
+    </td>
+    <td width="33%" align="center">
+      <a href="docs/themes/catppuccin.png"><img src="docs/themes/catppuccin.png" alt="The dvb app in Catppuccin" width="100%"></a><br>
+      Catppuccin
+    </td>
+    <td width="33%" align="center">
+      <a href="docs/themes/gruvbox.png"><img src="docs/themes/gruvbox.png" alt="The dvb app in Gruvbox" width="100%"></a><br>
+      Gruvbox
+    </td>
+  </tr>
+</table>
 
 ## Check a release
 

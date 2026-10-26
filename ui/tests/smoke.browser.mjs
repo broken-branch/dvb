@@ -59,7 +59,10 @@ try {
   await page.route('**/github/prefill', (route) =>
     route.fulfill({ json: { organization: null, owner_name: null, owner_email: null } }),
   );
-  await page.route('**/theme.css', (route) => route.fulfill({ status: 204 }));
+  let themeCss;
+  await page.route('**/theme.css', (route) =>
+    route.fulfill(themeCss ? { contentType: 'text/css', body: themeCss } : { status: 204 }),
+  );
   await page.route('**/', async (route) => {
     const response = await route.fetch();
     const html = (await response.text()).replace(
@@ -166,6 +169,22 @@ try {
     await page.locator('.kanban-column').first().waitFor();
     await page.evaluate(() => document.fonts.ready);
     await page.screenshot({ path: `${process.env.DVB_DEMO_DIR}/cockpit.png` });
+    // The same screen through the auto/Omarchy theme path, in each theme's colours.
+    const { demoThemes } = await server.ssrLoadModule('/tests/support/demo-fixtures.ts');
+    await mkdir(`${process.env.DVB_DEMO_DIR}/themes`, { recursive: true });
+    for (const theme of demoThemes) {
+      themeCss = theme.css;
+      await page.reload();
+      await page.locator('.kanban-column').first().waitFor();
+      await page.waitForFunction(
+        (background) =>
+          getComputedStyle(document.documentElement).getPropertyValue('--palette-background') ===
+          background,
+        theme.background,
+      );
+      await page.evaluate(() => document.fonts.ready);
+      await page.screenshot({ path: `${process.env.DVB_DEMO_DIR}/themes/${theme.name}.png` });
+    }
   }
   assert.deepEqual(errors, []);
   console.log(

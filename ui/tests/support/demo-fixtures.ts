@@ -113,3 +113,64 @@ export const demoResponses = {
   >,
   'POST /projects/catalogue/seen': undefined,
 };
+
+/** The colour roles the desk reads from each Omarchy theme's colors.toml, copied from Omarchy. */
+const omarchyThemes = {
+  'tokyo-night': {
+    mode: 'dark',
+    accent: '#7aa2f7',
+    selection: '#292e42',
+    background: '#1a1b26',
+    dark_background: '#13141c',
+    darker_background: '#0e0e14',
+    lighter_background: '#24283b',
+    foreground: '#a9b1d6',
+    red: '#f7768e',
+    yellow: '#e0af68',
+    green: '#9ece6a',
+    cyan: '#449dab',
+    blue: '#7aa2f7',
+    magenta: '#ad8ee6',
+  },
+  catppuccin: {
+    mode: 'dark',
+    accent: '#89b4fa',
+    selection: '#45475a',
+    background: '#1e1e2e',
+    dark_background: '#161622',
+    darker_background: '#101019',
+    lighter_background: '#313244',
+    foreground: '#cdd6f4',
+    red: '#f38ba8',
+    yellow: '#f9e2af',
+    green: '#a6e3a1',
+    cyan: '#94e2d5',
+    blue: '#89b4fa',
+    magenta: '#f5c2e7',
+  },
+  gruvbox: {
+    mode: 'dark',
+    accent: '#7daea3',
+    selection: '#504945',
+    background: '#282828',
+    dark_background: '#1e1e1e',
+    darker_background: '#161616',
+    lighter_background: '#3c3836',
+    foreground: '#d4be98',
+    red: '#ea6962',
+    yellow: '#d8a657',
+    green: '#a9b665',
+    cyan: '#89b482',
+    blue: '#7daea3',
+    magenta: '#d3869b',
+  },
+};
+
+/** The theme screenshots (docs/themes/*.png): /theme.css as the desk serves it in each theme. */
+export const demoThemes = Object.entries(omarchyThemes).map(([name, colors]) => ({
+  name,
+  background: colors.background,
+  css: `:root {\n${Object.entries(colors)
+    .map(([key, value]) => `  --dvb-${key}: ${value};`)
+    .join('\n')}\n}\n`,
+}));
