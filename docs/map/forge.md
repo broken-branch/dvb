@@ -27,7 +27,9 @@ these library entry points.
 - `crates/dvb-cli/src/doctor.rs`: [`dvb doctor`](../commands.md#setup-check).
 - `crates/dvb-cli/src/github.rs`: `dvb github connect` and the owner's git identity fallback.
 - `crates/dvb-desk/src/lib.rs`: browser/control routes, sessions, assets and proxy.
-- `crates/dvb-desk/src/github_redirect.rs`: authenticated GitHub setup bridge and prefill.
+- `crates/dvb-desk/src/github_redirect.rs`: authenticated GitHub setup bridge and
+  prefill, and GitHub's callback, answered from the engine's reply with plain desk
+  pages (no session needed): the installation redirect, Connected, or failure.
 - `crates/dvb-desk/src/theme.rs`, `notifications.rs`: desktop palette and notices
   (questions; with `notify_faults`, failed tasks and stuck CI checks; with
   `notify_completed`, "Goal completed" and "PR #n merged").

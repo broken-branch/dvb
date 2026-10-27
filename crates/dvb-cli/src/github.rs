@@ -287,7 +287,8 @@ fn create_page(manifest: &GithubManifest) -> String {
     )
 }
 
-fn escape(text: &str) -> String {
+/// Escapes text for HTML element content and quoted attribute values.
+pub fn escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")

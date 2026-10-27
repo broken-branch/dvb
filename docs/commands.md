@@ -67,8 +67,11 @@ app window, through the same engine setup routes the app's wizard uses. It print
 the Create App link: a page this command serves on 127.0.0.1 that posts the App
 manifest to GitHub, since GitHub creates an App only from a form. Open it in a
 browser on the machine running the cockpit (the command starts it as `dvb app`
-does); GitHub returns to the cockpit's callback. It then prints the installation
-link, where the owner chooses the repositories the App may access, and waits,
+does); GitHub returns to the cockpit's callback. That browser needs no dvb
+session: after Create App the callback goes straight on to GitHub's installation
+page, and after installation it says `Connected to <owner>. You can close this
+window.` It shows the failure page only when the engine refused or recorded a
+failed step. The command then prints the installation link, where the owner chooses the repositories the App may access, and waits,
 reading the setup status every 3 seconds, until GitHub reports the App installed.
 With `--repos` (a bare name is in the connected account) it also waits until the
 App reaches each one, printing the access settings link if one is missing. It

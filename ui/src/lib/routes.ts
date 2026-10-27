@@ -3,7 +3,6 @@
 export type Origin = { page: 'project' | 'task'; id: string };
 export type Route =
   | { page: 'home' | 'projects' | 'usage' | 'setup' }
-  | { page: 'github-complete'; id: string; tab?: string }
   | { page: 'decision'; id?: string; from?: Origin }
   | { page: 'project' | 'task'; id: string; tab?: string }
   | { page: 'settings'; tab?: string }
@@ -11,7 +10,6 @@ export type Route =
 const part = encodeURIComponent;
 export function buildRoute(route: Route): string {
   switch (route.page) {
-    case 'github-complete':
     case 'project':
     case 'task':
       return `${route.page}/${part(route.id)}${route.tab ? `/${part(route.tab)}` : ''}`;
@@ -43,7 +41,6 @@ export function parseRoute(hash: string): Route {
     case 'usage':
     case 'setup':
       return { page };
-    case 'github-complete':
     case 'project':
     case 'task':
       return { page, id: id || '', tab: tab || undefined };

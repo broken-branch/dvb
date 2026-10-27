@@ -21,7 +21,6 @@ import { TaskPage } from '@/screens/task';
 import { Usage } from '@/screens/usage';
 import { Company } from '@/screens/company';
 import { Settings } from '@/screens/settings';
-import { GithubCompletion } from '@/screens/github';
 import { Setup } from '@/screens/setup';
 import { ReportSheet } from '@/components/dvb/report-sheet';
 import type { ReportKind } from '@/lib/data/types';
@@ -124,9 +123,6 @@ function Workspace() {
       break;
     case 'settings':
       content = <Settings tab={arg || undefined} />;
-      break;
-    case 'github-complete':
-      content = <GithubCompletion phase={arg === 'install' ? 'install' : 'create'} />;
       break;
     case 'setup':
       content = <Setup />;

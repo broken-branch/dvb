@@ -28,6 +28,8 @@ a concise demonstration and checks run (at most 16 KiB of UTF-8), and an outcome
 - `{"summary":"...","outcome":{"status":"partial","reason":"other","detail":"What remains"}}` for other incomplete work.
 - `{"summary":"...","outcome":{"status":"blocked","prerequisite":"Task id or concrete prerequisite that is missing"}}` when work cannot proceed, including a missing API. Report this even when you changed no files. Give only the task's id or exact title when another task must merge first.
 
+When a check needs access the run does not have (for example anonymous access to a private repository), check it with the access the run already has if it matters; otherwise say plainly in the summary that it could not be checked and why. Do not loop on it, and do not report completion_unmet only for that reason.
+
 Do not describe an incomplete result only in prose. A fix round's summary
 replaces the earlier PR description. Never commit a write-up file such as
 `PR_DESCRIPTION.md`.

@@ -2,7 +2,7 @@ import { json } from '../support/api';
 import { mount, createFixtureSource } from '../support/render';
 import { describe, it, expect, vi } from 'vitest';
 import { screen, waitFor, act, fireEvent } from '@testing-library/react';
-import { GithubCompletion, GithubRepositories, GithubSetup } from '@/screens/github';
+import { GithubRepositories, GithubSetup } from '@/screens/github';
 import type { components } from '@/api/schema';
 
 const createApp = "Open GitHub to create dvb's App",
@@ -333,25 +333,6 @@ it('explains installation failure and retries through the authenticated desk wit
   expect(start).not.toHaveBeenCalled();
 });
 
-it('confirms install callback completion, attempts close and gives a return instruction', async () => {
-  const source = createFixtureSource();
-  source.replies['/github'] = {
-    connected: true,
-    organization: 'example-org',
-    install_url: null,
-    create_app: { status: 'succeeded' },
-    install_app: { status: 'succeeded' },
-  };
-  const close = vi.spyOn(window, 'close').mockImplementation(() => {});
-  mount(<GithubCompletion phase="install" />, source);
-  expect(await screen.findByRole('heading', { name: 'Install App completed' })).toBeVisible();
-  // The window closes from an effect React runs after the heading is in the page.
-  await waitFor(() => expect(close).toHaveBeenCalledOnce());
-  expect(screen.getByText('Connected to example-org.')).toBeVisible();
-  expect(screen.getByText(/Return to your original dvb window/)).toBeVisible();
-  expect(screen.getByText(/If this window did not close automatically/)).toBeVisible();
-});
-
 const created = {
   connected: false,
   organization: 'example-org',
@@ -359,57 +340,6 @@ const created = {
   create_app: { status: 'succeeded' },
   install_app: { status: 'not_started' },
 };
-
-it('goes on from Create App to a fresh GitHub installation link without closing', async () => {
-  const source = createFixtureSource();
-  source.replies['/github'] = created;
-  source.replies['POST /github/install'] = {
-    ...created,
-    install_url: 'https://github.com/apps/example/installations/new?state=fresh',
-    install_app: { status: 'awaiting_callback' },
-  };
-  const location = { href: '' };
-  vi.spyOn(window, 'location', 'get').mockReturnValue(location as Location);
-  const close = vi.spyOn(window, 'close').mockImplementation(() => {});
-  mount(<GithubCompletion phase="create" />, source);
-  expect(await screen.findByRole('heading', { name: 'Create App completed' })).toBeVisible();
-  await waitFor(() =>
-    expect(location.href).toBe('https://github.com/apps/example/installations/new?state=fresh'),
-  );
-  expect(source.fetch).toHaveBeenCalledWith(
-    '/github/install',
-    expect.objectContaining({ method: 'POST', credentials: 'same-origin' }),
-  );
-  expect(screen.getByText(/Opening the GitHub installation page/)).toBeVisible();
-  expect(close).not.toHaveBeenCalled();
-});
-
-it('explains a missing installation link after Create App', async () => {
-  const source = createFixtureSource();
-  source.replies['/github'] = created;
-  source.replies['POST /github/install'] = { ...created, install_url: null };
-  const location = { href: '' };
-  vi.spyOn(window, 'location', 'get').mockReturnValue(location as Location);
-  vi.spyOn(window, 'close').mockImplementation(() => {});
-  mount(<GithubCompletion phase="create" />, source);
-  expect(await screen.findByText('No installation link is available.')).toBeVisible();
-  expect(screen.getByRole('heading', { name: 'Install App could not start' })).toBeVisible();
-  expect(screen.getByText(/Retry Install App there/)).toBeVisible();
-  expect(location.href).toBe('');
-});
-
-it('explains callback transport failure without claiming a connection and directs retry to the original window', async () => {
-  const source = createFixtureSource();
-  source.statuses['/github'] = 503;
-  source.replies['/github'] = { code: 'INVALID_VALUE', detail: 'Service unavailable' };
-  const close = vi.spyOn(window, 'close').mockImplementation(() => {});
-  mount(<GithubCompletion phase="install" />, source);
-  expect(await screen.findByText('Service unavailable')).toBeVisible();
-  expect(screen.queryByText(/Connected to/)).not.toBeInTheDocument();
-  expect(screen.getByText(/Retry Install App there/)).toBeVisible();
-  // The window closes from an effect React runs after the error text is in the page.
-  await waitFor(() => expect(close).toHaveBeenCalled());
-});
 
 it.each([
   ['Create App', 'popup'],

@@ -6,6 +6,7 @@ the approved design. Your lane is review findings only; you decide nothing else.
 
 Check pictures and links in the PR description. A picture or link that does not
 open on GitHub (for example a local path) is an open finding.
+Do not ask for a check or set a condition that needs something the run cannot reach, such as opening a private repository's URLs while logged out; judge what the run can check.
 
 The change is `git diff {{base}} {{head}}`; the checkout is at `{{head}}`.
 

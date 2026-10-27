@@ -7,7 +7,8 @@ use axum::{
 };
 use dvb_cli::client::{Client, REQUEST_TIMEOUT};
 use dvb_core::api::{
-    GithubCallback, GithubCallbackError, GithubInstallRequest, GithubManifestRequest, GithubPrefill,
+    GithubCallback, GithubCallbackError, GithubConnection, GithubInstallRequest,
+    GithubManifestRequest, GithubPrefill, GithubSetupStep,
 };
 use std::collections::HashMap;
 
@@ -154,18 +155,24 @@ pub async fn callback(
     let Ok(body) = serde_json::to_vec(&callback) else {
         return callback_failure(StatusCode::BAD_REQUEST);
     };
-    let phase = if callback.installation_id.is_some() {
-        "install"
-    } else {
-        "create"
-    };
-    // The session cookie belongs to 127.0.0.1, while GitHub returns to localhost.
+    let installing = callback.installation_id.is_some();
+    let creating = callback.code.is_some();
+    // GitHub returns to localhost, where this browser (often not dvb's window) has no
+    // cockpit session, so the desk answers from the engine's reply itself.
     let mut response = match engine(&d, Method::POST, "/github/callback", body).await {
-        Ok(_) => Redirect::to(&format!(
-            "http://127.0.0.1:{}/#github-complete/{phase}",
-            d.port
-        ))
-        .into_response(),
+        Ok(bytes) => match serde_json::from_slice::<GithubConnection>(&bytes) {
+            Ok(c) if installing && matches!(c.install_app, GithubSetupStep::Succeeded) => {
+                connected_page(c.organization.as_deref())
+            }
+            Ok(c) if creating && matches!(c.create_app, GithubSetupStep::Succeeded) => {
+                match c.install_url {
+                    Some(url) => Redirect::to(&url).into_response(),
+                    None => continue_page(),
+                }
+            }
+            // The engine records a declined or failed step and still answers 200.
+            Ok(_) | Err(_) => callback_failure(StatusCode::BAD_GATEWAY),
+        },
         Err(Failed(status, _)) => callback_failure(status),
     };
     response.headers_mut().insert(
@@ -177,6 +184,34 @@ pub async fn callback(
         axum::http::HeaderValue::from_static("no-referrer"),
     );
     response
+}
+
+/// Plain desk pages, not the app: they show only what the browser may keep, never
+/// the callback's code, state or installation id.
+fn plain_page(title: &str, body: &str) -> Response {
+    Html(format!(
+        r#"<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><main><h1>{title}</h1>{body}</main></html>"#
+    ))
+    .into_response()
+}
+
+fn continue_page() -> Response {
+    plain_page(
+        "App created",
+        "<p>App created. Continue to install it: open the installation link that <code>dvb github connect</code> printed, or choose Install App in dvb's GitHub setup.</p>",
+    )
+}
+
+fn connected_page(account: Option<&str>) -> Response {
+    let connected = match account {
+        Some(account) => format!("Connected to {}.", dvb_cli::github::escape(account)),
+        None => "Connected.".into(),
+    };
+    // dvb's own window opened this one and closes it; another browser keeps the page.
+    plain_page(
+        "GitHub connected",
+        &format!("<p>{connected} You can close this window.</p><script>window.close()</script>"),
+    )
 }
 
 fn callback_failure(status: StatusCode) -> Response {
@@ -260,7 +295,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn socket_declined_callback_reaches_the_engine_and_returns_to_setup() {
+    async fn socket_declined_callback_reaches_the_engine_and_serves_the_failure_page() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("engine.sock");
         let listener = tokio::net::UnixListener::bind(&sock).unwrap();
@@ -270,7 +305,13 @@ mod tests {
                 |axum::Json(body): axum::Json<serde_json::Value>| async move {
                     assert_eq!(body["error"], "denied");
                     assert!(!body.to_string().contains("secret-error-description"));
-                    axum::Json(serde_json::json!({"create_app":{"status":"failed"}}))
+                    axum::Json(connection(
+                        serde_json::json!({"status": "failed", "failure": {
+                            "code": "authorization_denied", "message": "declined", "retryable": true
+                        }}),
+                        serde_json::json!({"status": "not_started"}),
+                        None,
+                    ))
                 },
             ),
         );
@@ -281,12 +322,207 @@ mod tests {
         let res = super::super::router(d).oneshot(Request::get(format!(
             "/github/callback?state={}&error=access_denied&error_description=secret-error-description", "a".repeat(32)
         )).header("host", "localhost:7400").body(Body::empty()).unwrap()).await.unwrap();
-        assert_eq!(res.status(), StatusCode::SEE_OTHER);
-        assert_eq!(
-            res.headers()[header::LOCATION],
-            "http://127.0.0.1:7400/#github-complete/create"
-        );
+        assert!(!res.headers().contains_key(header::LOCATION));
+        let text = page(res).await;
+        assert!(text.contains("GitHub setup could not finish"));
+        assert!(!text.contains("secret-error-description"));
         server.abort();
+    }
+
+    /// The engine's callback reply for the given steps, with the pending account.
+    fn connection(
+        create: serde_json::Value,
+        install: serde_json::Value,
+        install_url: Option<&str>,
+    ) -> serde_json::Value {
+        let mut reply = serde_json::json!({
+            "organization": "example-org", "account_type": "organization",
+            "install_url": install_url, "connected": false, "repository_access_url": null
+        });
+        reply["create_app"] = create;
+        reply["install_app"] = install;
+        reply
+    }
+
+    /// Serves `reply` as the engine's callback answer and returns GitHub's callback with `query`.
+    async fn engine_callback(reply: (StatusCode, serde_json::Value), query: &str) -> Response {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("engine.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let app = axum::Router::new().route(
+            "/github/callback",
+            axum::routing::post(move || async move { (reply.0, axum::Json(reply.1)) }),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let d = Arc::new(super::super::Desk::new(sock, 7400));
+        let res = super::super::router(d)
+            .oneshot(
+                Request::get(format!("/github/callback?{query}"))
+                    .header("host", "localhost:7400")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        server.abort();
+        assert_eq!(res.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(res.headers()[header::REFERRER_POLICY], "no-referrer");
+        res
+    }
+
+    async fn page(res: Response) -> String {
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    const STATE: &str = "5f0c6a1e9b2d4c7a8e3f1b6d0a9c2e4f";
+    const INSTALLATION: &str = "48151623";
+
+    fn create_query() -> String {
+        format!("state={STATE}&code=recorded-code")
+    }
+
+    fn install_query() -> String {
+        format!("state={STATE}&installation_id={INSTALLATION}&setup_action=install")
+    }
+
+    #[tokio::test]
+    async fn create_success_redirects_to_the_engines_install_link() {
+        let link = format!("https://github.com/apps/fixture/installations/new?state={STATE}");
+        let res = engine_callback(
+            (
+                StatusCode::OK,
+                connection(
+                    serde_json::json!({"status": "succeeded"}),
+                    serde_json::json!({"status": "awaiting_callback"}),
+                    Some(&link),
+                ),
+            ),
+            &create_query(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert_eq!(res.headers()[header::LOCATION], link.as_str());
+        assert!(!page(res).await.contains("recorded-code"));
+    }
+
+    #[tokio::test]
+    async fn create_success_without_an_install_link_serves_the_continue_page() {
+        let res = engine_callback(
+            (
+                StatusCode::OK,
+                connection(
+                    serde_json::json!({"status": "succeeded"}),
+                    serde_json::json!({"status": "awaiting_callback"}),
+                    None,
+                ),
+            ),
+            &create_query(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(!res.headers().contains_key(header::LOCATION));
+        let text = page(res).await;
+        assert!(text.contains("App created. Continue to install it:"));
+        assert!(!text.contains("could not finish"));
+        assert!(!text.contains("isn't running"));
+        for secret in ["recorded-code", STATE] {
+            assert!(!text.contains(secret), "continue page shows {secret}");
+        }
+    }
+
+    #[tokio::test]
+    async fn install_success_serves_the_connected_page() {
+        let mut reply = connection(
+            serde_json::json!({"status": "succeeded"}),
+            serde_json::json!({"status": "succeeded"}),
+            None,
+        );
+        reply["connected"] = true.into();
+        reply["repository_access_url"] = format!(
+            "https://github.com/organizations/example-org/settings/installations/{INSTALLATION}"
+        )
+        .into();
+        let res = engine_callback((StatusCode::OK, reply), &install_query()).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(!res.headers().contains_key(header::LOCATION));
+        let text = page(res).await;
+        assert!(text.contains("Connected to example-org. You can close this window."));
+        assert!(!text.contains("could not finish"));
+        assert!(!text.contains("isn't running"));
+        for secret in ["recorded-code", STATE, INSTALLATION] {
+            assert!(!text.contains(secret), "connected page shows {secret}");
+        }
+    }
+
+    #[tokio::test]
+    async fn connected_page_escapes_the_account_name() {
+        let mut reply = connection(
+            serde_json::json!({"status": "succeeded"}),
+            serde_json::json!({"status": "succeeded"}),
+            None,
+        );
+        reply["organization"] = "<b>org</b>".into();
+        let text = page(engine_callback((StatusCode::OK, reply), &install_query()).await).await;
+        assert!(text.contains("Connected to &lt;b&gt;org&lt;/b&gt;."));
+    }
+
+    #[tokio::test]
+    async fn engine_failures_serve_the_failure_page() {
+        let failed = serde_json::json!({"status": "failed", "failure": {
+            "code": "install_app_failed", "message": "failed", "retryable": true
+        }});
+        for (reply, query) in [
+            (
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    serde_json::json!({"code": "INTERNAL_ERROR", "detail": "x"}),
+                ),
+                create_query(),
+            ),
+            (
+                (
+                    StatusCode::FORBIDDEN,
+                    serde_json::json!({"code": "ROLE_NOT_ALLOWED", "detail": "x"}),
+                ),
+                install_query(),
+            ),
+            (
+                (
+                    StatusCode::OK,
+                    connection(
+                        serde_json::json!({"status": "succeeded"}),
+                        failed.clone(),
+                        Some("https://github.com/apps/fixture/installations/new"),
+                    ),
+                ),
+                install_query(),
+            ),
+            (
+                (
+                    StatusCode::OK,
+                    connection(
+                        failed.clone(),
+                        serde_json::json!({"status": "not_started"}),
+                        None,
+                    ),
+                ),
+                create_query(),
+            ),
+            ((StatusCode::OK, serde_json::json!({})), create_query()),
+        ] {
+            let res = engine_callback(reply, &query).await;
+            assert!(!res.status().is_success());
+            assert!(!res.headers().contains_key(header::LOCATION));
+            let text = page(res).await;
+            assert!(text.contains("GitHub setup could not finish"), "{query}");
+            assert!(!text.contains("Connected"));
+            assert!(!text.contains("App created"));
+        }
     }
 
     #[tokio::test]
@@ -461,10 +697,13 @@ mod tests {
                     let calls = callback_calls.clone();
                     async move {
                         calls.lock().unwrap().push(body);
-                        axum::Json(serde_json::json!({
-                            "connected": false, "organization": "example-org",
-                            "install_url": "https://github.com/apps/fixture/installations/new", "pem": "discarded-key"
-                        }))
+                        let mut reply = connection(
+                            serde_json::json!({"status": "succeeded"}),
+                            serde_json::json!({"status": "awaiting_callback"}),
+                            Some("https://github.com/apps/fixture/installations/new"),
+                        );
+                        reply["pem"] = "discarded-key".into();
+                        axum::Json(reply)
                     }
                 }),
             );
@@ -508,7 +747,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(
             response.headers()[header::LOCATION],
-            "http://127.0.0.1:7300/#github-complete/create"
+            "https://github.com/apps/fixture/installations/new"
         );
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         let body = axum::body::to_bytes(response.into_body(), 1 << 16)
@@ -593,7 +832,7 @@ mod tests {
         server.abort();
     }
     #[tokio::test]
-    async fn socket_localhost_callback_returns_to_session_origin_only_after_state_is_accepted() {
+    async fn socket_localhost_callback_goes_on_to_install_only_after_state_is_accepted() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("engine.sock");
         let listener = tokio::net::UnixListener::bind(&sock).unwrap();
@@ -601,9 +840,19 @@ mod tests {
             "/github/callback",
             axum::routing::post(|axum::Json(body): axum::Json<GithubCallback>| async move {
                 if body.state == "a".repeat(32) {
-                    StatusCode::OK
+                    (
+                        StatusCode::OK,
+                        axum::Json(connection(
+                            serde_json::json!({"status": "succeeded"}),
+                            serde_json::json!({"status": "awaiting_callback"}),
+                            Some("https://github.com/apps/fixture/installations/new"),
+                        )),
+                    )
                 } else {
-                    StatusCode::FORBIDDEN
+                    (
+                        StatusCode::FORBIDDEN,
+                        axum::Json(serde_json::json!({"code": "ROLE_NOT_ALLOWED", "detail": "x"})),
+                    )
                 }
             }),
         );
@@ -629,7 +878,7 @@ mod tests {
             if expected_status == StatusCode::SEE_OTHER {
                 assert_eq!(
                     response.headers()[header::LOCATION],
-                    "http://127.0.0.1:7400/#github-complete/create"
+                    "https://github.com/apps/fixture/installations/new"
                 );
             } else {
                 assert!(!response.headers().contains_key(header::LOCATION));

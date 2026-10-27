@@ -698,9 +698,16 @@ async fn rendered_builder_brief_carries_its_privacy_instruction_once() {
 }
 
 #[tokio::test]
-async fn rendered_builder_and_reviewer_prompts_require_github_readable_evidence() {
+async fn rendered_builder_and_reviewer_prompts_require_reachable_github_evidence() {
     let (_d, e, p) = engine();
     let task = with_a_task(&e, &p);
+    let run = RunId::new("b1");
+    launch::launch(e.clone(), run.clone(), "[]".into(), vec![], None)
+        .await
+        .unwrap();
+    let text = builder_prompt(&e, &run).await;
+    let access_rule = "When a check needs access the run does not have (for example anonymous access to a private repository), check it with the access the run already has if it matters; otherwise say plainly in the summary that it could not be checked and why. Do not loop on it, and do not report completion_unmet only for that reason.";
+    assert_eq!(text.matches(access_rule).count(), 1, "{text}");
     let summary = "Changed the chart.\n\n![Before](/var/lib/dvb/work/example/ws/before.png)\n\nChecked: cargo test — passed.";
     e.append_checked(Some(&p), Actor::Engine, |_, _| {
         Ok(vec![
@@ -736,6 +743,8 @@ async fn rendered_builder_and_reviewer_prompts_require_github_readable_evidence(
             .await
             .unwrap();
         let text = builder_prompt(&e, &RunId::new(run)).await;
+        let access_rule = "Do not ask for a check or set a condition that needs something the run cannot reach, such as opening a private repository's URLs while logged out; judge what the run can check.";
+        assert_eq!(text.matches(access_rule).count(), 1, "{slug}: {text}");
         assert!(
             text.contains("## PR description") && text.contains(summary),
             "{slug}: {text}"
@@ -1704,7 +1713,7 @@ async fn owner_retry_text_is_bounded_replaced_cleared_and_replayed_in_saved_prom
             ("task_title", title),
         ]);
         // Preserve the historical fixture; goal context, scope-block reporting
-        // and summary/evidence handoff rules are outside its no-retry shape.
+        // and summary/evidence/access rules are outside its no-retry shape.
         let (before, instructions) = delivered
             .split_once("You cannot ask the owner questions.")
             .unwrap();
@@ -1719,7 +1728,7 @@ async fn owner_retry_text_is_bounded_replaced_cleared_and_replayed_in_saved_prom
                 &vars,
                 false
             ),
-            "apart from goal context, scope-block reporting and summary/evidence handoff, no-text delivery matches the historical builder template exactly"
+            "apart from goal context, scope-block reporting and summary/evidence/access rules, no-text delivery matches the historical builder template exactly"
         );
     }
     // The original historical run predates all retry events and sees no text.
