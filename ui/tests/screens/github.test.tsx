@@ -333,6 +333,51 @@ it('explains installation failure and retries through the authenticated desk wit
   expect(start).not.toHaveBeenCalled();
 });
 
+it('opens the pending install link again without replacing its state, and its callback connects', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const source = createFixtureSource();
+  const first = 'https://github.com/apps/example/installations/new?state=first';
+  source.replies['/github'] = {
+    connected: false,
+    organization: 'example-org',
+    install_url: null,
+    create_app: { status: 'succeeded' },
+    install_app: { status: 'not_started' },
+  };
+  source.replies['POST /github/install'] = {
+    ...(source.replies['/github'] as object),
+    install_url: first,
+    install_app: { status: 'awaiting_callback' },
+  };
+  const external = { close: vi.fn(), focus: vi.fn(), location: { href: '' } };
+  const open = vi.spyOn(window, 'open').mockReturnValue(external as unknown as Window);
+  const { user } = mount(<GithubSetup />, source);
+  await user.click(await screen.findByRole('button', { name: installApp }));
+  expect(external.location.href).toBe(first);
+  // The engine now reports the installation as waiting on the first state.
+  source.replies['/github'] = source.replies['POST /github/install'];
+  await user.click(await screen.findByRole('button', { name: 'Open GitHub again' }));
+  await user.click(screen.getByRole('button', { name: 'Open GitHub again' }));
+  const installs = () => source.fetch.mock.calls.filter(([url]) => url === '/github/install');
+  expect(installs()).toHaveLength(1);
+  expect(open).toHaveBeenCalledTimes(3);
+  expect(open.mock.calls.map(([, target]) => target)).toEqual(Array(3).fill('dvb-github-install'));
+  expect(open.mock.calls.slice(1).map(([url]) => url)).toEqual([first, first]);
+  expect(external.focus).toHaveBeenCalledTimes(2);
+  // GitHub returns to the callback with the first state, which the engine accepts.
+  source.replies['/github'] = {
+    ...(source.replies['/github'] as object),
+    connected: true,
+    install_app: { status: 'succeeded' },
+  };
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3000);
+  });
+  expect(await screen.findByText('Connected to example-org')).toBeVisible();
+  expect(installs()).toHaveLength(1);
+  vi.useRealTimers();
+});
+
 const created = {
   connected: false,
   organization: 'example-org',
@@ -358,7 +403,7 @@ it.each([
       install_url: installing ? 'https://github.com/apps/example/installations/new' : null,
       repository_access_url: null,
       create_app: { status: installing ? 'succeeded' : 'not_started' },
-      install_app: { status: installing ? 'awaiting_callback' : 'not_started' },
+      install_app: { status: 'not_started' },
     };
     source.replies['/github'] = connection;
     const endpoint = installing ? 'POST /github/install' : 'POST /github/start';
@@ -379,8 +424,7 @@ it.each([
       ])
         fireEvent.change(screen.getByLabelText(label), { target: { value } });
     }
-    // A pending installation offers to open GitHub again.
-    const button = installing ? 'Open GitHub again' : createApp;
+    const button = installing ? installApp : createApp;
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: button }));
     });

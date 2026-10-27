@@ -134,9 +134,18 @@ export function GithubSetup({
     }
   };
   const install = async () => {
-    setBusy(true);
     setInstallError('');
-    const external = window.open('about:blank', '_blank');
+    // While GitHub's window is open the callback expects the pending link's state, so opening
+    // GitHub again shows that link in the same window instead of asking for a new one.
+    const pending =
+      connection.install_app?.status === 'awaiting_callback' ? connection.install_url : null;
+    const external = window.open(pending || 'about:blank', 'dvb-github-install');
+    if (pending) {
+      if (external) external.focus();
+      else setInstallError('Allow popups for dvb, then retry Install App.');
+      return;
+    }
+    setBusy(true);
     try {
       if (!external) throw new Error('Allow popups for dvb, then retry Install App.');
       const response = await retryGithubInstall();

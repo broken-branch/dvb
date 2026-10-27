@@ -139,6 +139,9 @@ theme → "Auto / follow Omarchy"). Switching the Omarchy theme recolours dvb ri
 away, without a reload. It also ships palettes named after Omarchy's themes,
 which you can pick there.
 
+Omarchy users can add the [bar widget](https://github.com/broken-branch/omarchy-dvb#readme) with
+`omarchy plugin add https://github.com/broken-branch/omarchy-dvb --enable`.
+
 <table>
   <tr>
     <td width="33%" align="center">
