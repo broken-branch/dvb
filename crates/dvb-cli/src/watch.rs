@@ -4,7 +4,7 @@ use crate::client::WatchEvent;
 use crate::{CliError, Client, Event};
 use dvb_core::api::{ProjectView, RoleFields, RoleHistory};
 use dvb_core::roles::RoleRecord;
-use dvb_core::{EventKind, RoleId};
+use dvb_core::{EventKind, RefusalCode, RoleId};
 use std::cell::{Cell, RefCell};
 use std::ops::ControlFlow;
 
@@ -217,7 +217,13 @@ async fn feed_text(client: &Client, event: &Event) -> Result<Option<String>, Cli
     else {
         return Ok(text);
     };
-    let roles: Vec<RoleRecord> = client.get(&format!("/projects/{project}/roles")).await?;
+    let roles: Vec<RoleRecord> = match client.get(&format!("/projects/{project}/roles")).await {
+        Ok(roles) => roles,
+        Err(CliError::Refused(r)) if r.code == RefusalCode::NotFound => {
+            return Ok(Some(text.clone()));
+        }
+        Err(error) => return Err(error),
+    };
     Ok(Some(match crate::role_name(&roles, role) {
         Some(name) if name != role.as_str() => {
             text.replacen(role.as_str(), &format!("{role} ({name})"), 1)
@@ -243,10 +249,23 @@ pub async fn line(client: &Client, event: &Event) -> Result<String, CliError> {
     }) else {
         return Ok(crate::event_line(event, text));
     };
-    let project: ProjectView = client.get(&format!("/projects/{project}")).await?;
-    let mut text = format!("{} ({})", text.unwrap_or_default(), project.name);
+    let project_name = match client
+        .get::<ProjectView>(&format!("/projects/{project}"))
+        .await
+    {
+        Ok(project) => project.name,
+        Err(CliError::Refused(r)) if r.code == RefusalCode::NotFound => project.to_string(),
+        Err(error) => return Err(error),
+    };
+    let mut text = format!("{} ({project_name})", text.unwrap_or_default());
     if let EventKind::RoleChanged { role, .. } = &event.kind {
-        let history: RoleHistory = client.get(&format!("/roles/{}/history", role.id)).await?;
+        let history: RoleHistory = match client.get(&format!("/roles/{}/history", role.id)).await {
+            Ok(history) => history,
+            Err(CliError::Refused(r)) if r.code == RefusalCode::NotFound => {
+                return Ok(crate::event_line(event, Some(text)));
+            }
+            Err(error) => return Err(error),
+        };
         let previous = history
             .versions
             .iter()
@@ -445,6 +464,163 @@ mod tests {
             project: Some(ProjectId::new("project-id")),
             kind,
             evidence: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn text_watch_continues_past_events_of_a_removed_project() {
+        watch_removed_project(false).await;
+    }
+
+    #[tokio::test]
+    async fn json_watch_continues_past_events_of_a_removed_project() {
+        watch_removed_project(true).await;
+    }
+
+    async fn watch_removed_project(json_output: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("engine.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        let mut requests = test_http::requests(listener);
+        let added = event(EventKind::RoleAdded(role()));
+        let mut hired = event(EventKind::HireAdded(HireRecord {
+            id: HireId::new("hire"),
+            role: RoleId::new("removed-role"),
+            model: "fake-1".into(),
+            effort: Effort::Medium,
+            status: HireStatus::Active,
+            routine: false,
+        }));
+        hired.id = EventId(11);
+        let mut next = event(EventKind::EngineStarted {
+            version: "new".into(),
+        });
+        next.id = EventId(12);
+        next.project = None;
+        let events = [added, hired, next];
+        let page = json!({
+            "cursor": 12, "events": [&events[2], &events[1], &events[0]],
+            "before": null, "activity": []
+        });
+        let server = tokio::spawn(async move {
+            while let Some((request, response)) = requests.recv().await {
+                let body = match request.uri().path() {
+                    "/events/recent" => test_http::json(200, page.clone()),
+                    "/projects/project-id" | "/projects/project-id/roles" => test_http::json(
+                        404,
+                        json!({"code": "NOT_FOUND", "detail": "project project-id"}),
+                    ),
+                    path => panic!("unexpected path: {path}"),
+                };
+                response.send(body).unwrap();
+            }
+        });
+        let mut lines = Vec::new();
+        let result = follow(
+            &Client::new(sock),
+            0,
+            true,
+            json_output,
+            &Default::default(),
+            |line| {
+                lines.push(line);
+                Ok(true)
+            },
+        )
+        .await;
+        server.abort();
+        result.unwrap();
+        assert_eq!(lines.len(), events.len());
+        for (line, event) in lines.iter().zip(&events) {
+            let wording = crate::feed_word(&event.kind).unwrap();
+            if json_output {
+                let raw: Value = serde_json::from_str(line).unwrap();
+                assert_eq!(raw["id"], event.id.0);
+                assert_eq!(raw["kind"], event.kind.kind());
+                assert_eq!(
+                    raw["payload"],
+                    serde_json::to_value(event).unwrap()["payload"]
+                );
+                assert_eq!(raw["text"], wording);
+            } else {
+                let text = if event.project.is_some() {
+                    format!("{wording} (project-id)")
+                } else {
+                    wording
+                };
+                assert_eq!(line, &crate::event_line(event, Some(text)));
+            }
+        }
+        assert!(lines[1].contains("removed-role"));
+    }
+
+    #[tokio::test]
+    async fn context_refusals_only_fall_back_for_not_found() {
+        for path in [
+            "/projects/project-id",
+            "/projects/project-id/roles",
+            "/roles/code-reviewer/history",
+        ] {
+            for code in [
+                dvb_core::RefusalCode::NotFound,
+                dvb_core::RefusalCode::UpdateRefused,
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let sock = dir.path().join("engine.sock");
+                let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+                let mut requests = test_http::requests(listener);
+                let refusal =
+                    serde_json::to_value(dvb_core::Refusal::new(code.clone(), "unavailable"))
+                        .unwrap();
+                let server = tokio::spawn(async move {
+                    while let Some((request, response)) = requests.recv().await {
+                        let body = if request.uri().path() == path {
+                            test_http::json(404, refusal.clone())
+                        } else {
+                            assert_eq!(request.uri().path(), "/projects/project-id");
+                            test_http::json(
+                                200,
+                                json!({
+                                    "id":"project-id", "name":"example", "repo":"local",
+                                    "default_branch":"main", "ci":"no_ci", "paused":false
+                                }),
+                            )
+                        };
+                        response.send(body).unwrap();
+                    }
+                });
+                let kind = if path.ends_with("/roles") {
+                    EventKind::DecisionRecorded {
+                        by: RoleId::new("code-reviewer"),
+                        title: "Use a map".into(),
+                        options: None,
+                        swot: None,
+                        choice: "map".into(),
+                        reason: "Simple".into(),
+                    }
+                } else if path == "/projects/project-id" {
+                    EventKind::RoleAdded(role())
+                } else {
+                    EventKind::RoleChanged {
+                        role: role(),
+                        restored_from: None,
+                    }
+                };
+                let event = event(kind);
+                let result = line(&Client::new(sock), &event).await;
+                server.abort();
+                if code == dvb_core::RefusalCode::NotFound {
+                    let text = crate::feed_word(&event.kind).unwrap();
+                    let expected = match path {
+                        "/projects/project-id" => format!("{text} (project-id)"),
+                        "/roles/code-reviewer/history" => format!("{text} (example)"),
+                        _ => text,
+                    };
+                    assert_eq!(result.unwrap(), crate::event_line(&event, Some(expected)));
+                } else {
+                    assert!(matches!(result, Err(CliError::Refused(r)) if r.code == code));
+                }
+            }
         }
     }
 

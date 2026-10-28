@@ -5,7 +5,8 @@
 //! installed desk keeps the owner's copy of the desktop entry and app icon current.
 //! The browser uses a session cookie set by a one-time launch URL, with `Host`
 //! and `Origin` checks; the engine never sees the browser. A launch URL minted
-//! to open the app expires after `LAUNCH_LIFETIME_MS`.
+//! to open the app expires after `LAUNCH_LIFETIME_MS`, and any launch URL
+//! opens only for a loopback client socket owned by the desk's own uid.
 
 mod desktop;
 mod github_redirect;
@@ -15,7 +16,7 @@ mod theme;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{Query, Request, State};
+use axum::extract::{ConnectInfo, Query, Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
@@ -24,7 +25,7 @@ use dvb_cli::github::token;
 use dvb_core::{Clock, Timestamp};
 use rust_embed::RustEmbed;
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -54,6 +55,8 @@ pub struct Desk {
     theme_path: Option<PathBuf>,
     navigation: tokio::sync::broadcast::Sender<String>,
     clock: Arc<dyn Clock>,
+    /// The uid owning the client socket `(peer, desk)`; None when it cannot be found.
+    peer_uid: fn(SocketAddr, SocketAddr) -> Option<u32>,
 }
 
 type DeskState = Arc<Desk>;
@@ -71,6 +74,7 @@ impl Desk {
             theme_path: theme::colors_path(),
             navigation: tokio::sync::broadcast::channel(16).0,
             clock: Arc::new(dvb_core::SystemClock),
+            peer_uid: procfs_peer_uid,
         }
     }
 
@@ -184,12 +188,13 @@ pub async fn serve(engine_sock: PathBuf, port: u16) -> std::io::Result<()> {
         use std::io::Write;
         writeln!(std::io::stdout().lock(), "{url}")?;
     }
+    let browser_app = router(desk.clone()).into_make_service_with_connect_info::<SocketAddr>();
     let result = if port == 0 {
-        axum::serve(listener, router(desk)).await
+        axum::serve(listener, browser_app).await
     } else {
         let control = bind_control(&control_path).await?;
         let control_app = control_router(desk.clone());
-        let browser = axum::serve(listener, router(desk));
+        let browser = axum::serve(listener, browser_app);
         let local = axum::serve(control, control_app);
         let result = tokio::select! { r = browser => r, r = local => r };
         let _ = std::fs::remove_file(control_path);
@@ -307,12 +312,23 @@ async fn theme_css(State(d): State<DeskState>, req: Request) -> Response {
 
 async fn launch(
     State(d): State<DeskState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Query(q): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Response {
     // The launch URL has a token but must still resist DNS rebinding.
     if !d.host_ok(&headers) || !d.origin_ok(&Method::GET, &headers) {
         return StatusCode::FORBIDDEN.into_response();
+    }
+    // Other local accounts can read the URL from the browser's arguments.
+    // Their refusal leaves the token for the owner's browser.
+    let desk = SocketAddr::from(([127, 0, 0, 1], d.port));
+    if (d.peer_uid)(peer, desk) != Some(dvb_core::io::own_uid()) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Only the account running dvb can open this launch link.",
+        )
+            .into_response();
     }
     let now = d.clock.now();
     let mut launch = d.launch.lock().unwrap_or_else(dvb_core::sync::recover);
@@ -349,6 +365,58 @@ async fn launch(
         res.headers_mut().insert(header::SET_COOKIE, v);
     }
     res
+}
+
+/// The uid of this host's TCP socket from `peer` to `desk`, from procfs.
+fn procfs_peer_uid(peer: SocketAddr, desk: SocketAddr) -> Option<u32> {
+    // A dual-stack client socket is listed in tcp6 with v4-mapped addresses.
+    ["/proc/net/tcp", "/proc/net/tcp6"]
+        .into_iter()
+        .find_map(|path| match std::fs::read_to_string(path) {
+            Ok(table) => socket_uid(&table, peer, desk),
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("dvb desk: cannot read {path}: {e}");
+                }
+                None
+            }
+        })
+}
+
+/// The uid of the entry in a `/proc/net/tcp` or `tcp6` table whose local
+/// address is `local` and remote address is `remote`.
+fn socket_uid(table: &str, local: SocketAddr, remote: SocketAddr) -> Option<u32> {
+    let (local, remote) = (canonical(local), canonical(remote));
+    table.lines().skip(1).find_map(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let (Some(l), Some(r), Some(uid)) = (fields.get(1), fields.get(2), fields.get(7)) else {
+            return None;
+        };
+        (proc_addr(l)? == local && proc_addr(r)? == remote)
+            .then(|| uid.parse().ok())
+            .flatten()
+    })
+}
+
+/// Parses `ADDR:PORT`, where the address is 32-bit words in host byte order.
+fn proc_addr(field: &str) -> Option<SocketAddr> {
+    let (addr, port) = field.split_once(':')?;
+    let port = u16::from_str_radix(port, 16).ok()?;
+    let mut bytes = Vec::with_capacity(16);
+    for word in 0..addr.len() / 8 {
+        let hex = addr.get(word * 8..word * 8 + 8)?;
+        bytes.extend(u32::from_str_radix(hex, 16).ok()?.to_ne_bytes());
+    }
+    let ip = match (addr.len(), bytes.as_slice()) {
+        (8, &[a, b, c, d]) => IpAddr::from([a, b, c, d]),
+        (32, _) => IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(bytes).ok()?)),
+        _ => return None,
+    };
+    Some(canonical(SocketAddr::new(ip, port)))
+}
+
+fn canonical(addr: SocketAddr) -> SocketAddr {
+    SocketAddr::new(addr.ip().to_canonical(), addr.port())
 }
 
 /// `/api/<path>` -> the engine's `/<path>`; `/events` -> `/events`.
@@ -469,11 +537,34 @@ mod tests {
     use super::*;
     use tower::ServiceExt;
 
+    const OWNER: SocketAddr = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 40_000);
+    const STRANGER: SocketAddr = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 40_001);
+
+    fn test_desk() -> Desk {
+        Desk {
+            peer_uid: |peer, desk| {
+                assert_eq!(desk, SocketAddr::from(([127, 0, 0, 1], 7300)));
+                let own = dvb_core::io::own_uid();
+                Some(if peer == STRANGER { own ^ 1 } else { own })
+            },
+            ..Desk::new("/nonexistent/engine.sock".into(), 7300)
+        }
+    }
+
     fn desk() -> DeskState {
-        Arc::new(Desk::new("/nonexistent/engine.sock".into(), 7300))
+        Arc::new(test_desk())
     }
 
     async fn call(d: &DeskState, req: axum::http::Request<Body>) -> Response {
+        call_from(d, OWNER, req).await
+    }
+
+    async fn call_from(
+        d: &DeskState,
+        peer: SocketAddr,
+        mut req: axum::http::Request<Body>,
+    ) -> Response {
+        req.extensions_mut().insert(ConnectInfo(peer));
         router(d.clone()).oneshot(req).await.unwrap()
     }
 
@@ -750,7 +841,7 @@ mod tests {
         let clock = Arc::new(dvb_core::FakeClock::at(Timestamp(1_000_000)));
         let d = Arc::new(Desk {
             clock: clock.clone(),
-            ..Desk::new("/nonexistent/engine.sock".into(), 7300)
+            ..test_desk()
         });
         let url = d.rotate_launch();
         clock.advance_millis(LAUNCH_LIFETIME_MS - 1);
@@ -772,11 +863,96 @@ mod tests {
         // The link printed at start goes to stdout, not process arguments.
         let d = Arc::new(Desk {
             clock: clock.clone(),
-            ..Desk::new("/nonexistent/engine.sock".into(), 7300)
+            ..test_desk()
         });
         let started = d.launch_url().unwrap();
         clock.advance_millis(100 * LAUNCH_LIFETIME_MS);
         assert_eq!(redeem(&d, &started).await.status(), StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
+    async fn a_launch_link_opens_only_for_the_desks_own_uid_and_survives_a_stranger() {
+        let d = desk();
+        let url = d.rotate_launch();
+        let req = || {
+            Request::get(url.trim_start_matches("http://127.0.0.1:7300"))
+                .header("host", "127.0.0.1:7300")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let res = call_from(&d, STRANGER, req()).await;
+        assert!(!res.headers().contains_key(header::SET_COOKIE));
+        assert_eq!(
+            refusal(res).await,
+            "Only the account running dvb can open this launch link."
+        );
+        assert_eq!(d.launch_url().as_deref(), Some(url.as_str()));
+        let res = call_from(&d, OWNER, req()).await;
+        assert_eq!(res.status(), StatusCode::SEE_OTHER);
+        assert!(res.headers().contains_key(header::SET_COOKIE));
+        // A socket the lookup cannot find is refused too.
+        let d = Arc::new(Desk {
+            peer_uid: |_, _| None,
+            ..test_desk()
+        });
+        let url = d.launch_url().unwrap();
+        assert_eq!(redeem(&d, &url).await.status(), StatusCode::FORBIDDEN);
+        assert_eq!(d.launch_url().as_deref(), Some(url.as_str()));
+    }
+
+    #[tokio::test]
+    async fn socket_launch_redeems_for_this_process_through_procfs() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let d = Arc::new(Desk::new("/nonexistent/engine.sock".into(), port));
+        let url = d.launch_url().unwrap();
+        let app = router(d.clone()).into_make_service_with_connect_info::<SocketAddr>();
+        let serving = tokio::spawn(async move { axum::serve(listener, app).await });
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let path = url.trim_start_matches(&format!("http://127.0.0.1:{port}"));
+        let request =
+            format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+        client.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).await.unwrap();
+        serving.abort();
+        assert!(response.starts_with("HTTP/1.1 303"), "{response}");
+        assert!(d.launch_url().is_none());
+    }
+
+    // Fixture rows are as a little-endian kernel prints them; the desk runs as 2000.
+    const TCP: &str = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:1C94 00000000:0000 0A 00000000:00000000 00:00000000 00000000  2000        0 4001 1 0 100 0 0 10 0
+   1: 0100007F:1C94 0100007F:9C40 01 00000000:00000000 00:00000000 00000000  2000        0 4002 1 0 20 4 30 10 -1
+   2: 0100007F:9C40 0100007F:1C94 01 00000000:00000000 00:00000000 00000000  1000        0 4003 1 0 20 4 30 10 -1
+   3: 0100007F:9C41 0100007F:1C94 01 00000000:00000000 00:00000000 00000000  1001        0 4004 1 0 20 4 30 10 -1
+";
+    const TCP6: &str = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000000000000000000001000000:9C40 00000000000000000000000001000000:1C94 01 00000000:00000000 00:00000000 00000000  1000        0 5001 1 0 20 4 30 10 -1
+   1: 0000000000000000FFFF00000100007F:9C42 0000000000000000FFFF00000100007F:1C94 01 00000000:00000000 00:00000000 00000000  1002        0 5002 1 0 20 4 30 10 -1
+";
+
+    #[test]
+    fn the_client_socket_uid_comes_from_the_matching_proc_net_tcp_entry() {
+        let v4 = |port| SocketAddr::from(([127, 0, 0, 1], port));
+        let v6 = |port| SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port);
+        let desk = v4(7316);
+        assert_eq!(socket_uid(TCP, v4(40_000), desk), Some(1000));
+        assert_eq!(socket_uid(TCP, v4(40_001), desk), Some(1001));
+        // The desk's accepted socket runs the other way.
+        assert_eq!(socket_uid(TCP, desk, v4(40_000)), Some(2000));
+        assert_eq!(socket_uid(TCP, v4(40_002), desk), None);
+        assert_eq!(socket_uid(TCP, v4(40_000), v4(7317)), None);
+        assert_eq!(socket_uid(TCP6, v6(40_000), v6(7316)), Some(1000));
+        assert_eq!(socket_uid(TCP6, v4(40_000), desk), None);
+        // A dual-stack client reaches the IPv4 desk through v4-mapped addresses.
+        assert_eq!(socket_uid(TCP6, v4(40_002), desk), Some(1002));
+        assert_eq!(socket_uid("", v4(40_000), desk), None);
+        let broken = "header\n 0: 0100007F:9C40 0100007F:1C94 01 x x x nope\n 1: 7F:9C40 0100007F:1C94 01 x x x 1000";
+        assert_eq!(socket_uid(broken, v4(40_000), desk), None);
     }
 
     #[tokio::test]
