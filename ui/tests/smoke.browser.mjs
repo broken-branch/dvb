@@ -32,10 +32,14 @@ const browser = await chromium.launch({
   headless: true,
   args: ['--no-sandbox'],
 });
-try {
+let themeCss;
+const errors = [];
+// A page that reads the engine fixtures and the theme in `themeCss`.
+async function openPage(options) {
   const page = await browser.newPage({
     reducedMotion: 'reduce',
     permissions: ['local-network-access'],
+    ...options,
   });
   // Chrome's automatic icon request is outside the app's asset graph.
   await page.route('**/favicon.ico', (route) => route.fulfill({ status: 204 }));
@@ -59,7 +63,6 @@ try {
   await page.route('**/github/prefill', (route) =>
     route.fulfill({ json: { organization: null, owner_name: null, owner_email: null } }),
   );
-  let themeCss;
   await page.route('**/theme.css', (route) =>
     route.fulfill(themeCss ? { contentType: 'text/css', body: themeCss } : { status: 204 }),
   );
@@ -71,11 +74,14 @@ try {
     );
     await route.fulfill({ response, body: html });
   });
-  const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text());
   });
+  return page;
+}
+try {
+  const page = await openPage();
   const base = `http://127.0.0.1:${server.httpServer.address().port}/`;
   const routes = [
     'home',
@@ -185,6 +191,50 @@ try {
       await page.evaluate(() => document.fonts.ready);
       await page.screenshot({ path: `${process.env.DVB_DEMO_DIR}/themes/${theme.name}.png` });
     }
+    // The Omarchy plugin preview: the cockpit's Now screen in Tokyo Night, Omarchy's default theme, under
+    // the bar's badge and the widget's open panel, all reading the same waiting items.
+    const { demoNeedsYouResponses } = await server.ssrLoadModule('/tests/support/demo-fixtures.ts');
+    const { omarchyDesktop } = await server.ssrLoadModule('/tests/support/omarchy-desktop.ts');
+    Object.assign(fixtures, demoNeedsYouResponses);
+    const tokyoNight = demoThemes.find((theme) => theme.name === 'tokyo-night');
+    themeCss = tokyoNight.css;
+    // A few minutes after the demo's last work, so its durations read as a live session.
+    const now = 1790811600000;
+    const timeZone = 'America/Chicago';
+    const desktop = await openPage({
+      viewport: { width: 1280, height: 840 },
+      deviceScaleFactor: 2,
+      timezoneId: timeZone,
+    });
+    await desktop.clock.setFixedTime(now);
+    await desktop.route('**/omarchy-desktop', (route) =>
+      route.fulfill({
+        contentType: 'text/html',
+        body: omarchyDesktop({
+          colors: tokyoNight.colors,
+          cockpit: `${base}#home`,
+          status: demoNeedsYouResponses['/status'],
+          questions: demoNeedsYouResponses['/questions'],
+          projects: demoNeedsYouResponses['/projects'],
+          now,
+          timeZone,
+        }),
+      }),
+    );
+    await desktop.goto(`${base}omarchy-desktop`);
+    const cockpit = desktop.frameLocator('iframe');
+    await cockpit.locator('#needs-you [data-needs]').first().waitFor();
+    await desktop
+      .frames()[1]
+      .waitForFunction(
+        (background) =>
+          getComputedStyle(document.documentElement).getPropertyValue('--palette-background') ===
+          background,
+        tokyoNight.background,
+      );
+    for (const frame of desktop.frames()) await frame.evaluate(() => document.fonts.ready);
+    await desktop.screenshot({ path: `${process.env.DVB_DEMO_DIR}/omarchy-preview.png` });
+    await desktop.close();
   }
   assert.deepEqual(errors, []);
   console.log(

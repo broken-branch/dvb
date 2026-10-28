@@ -114,6 +114,107 @@ export const demoResponses = {
   'POST /projects/catalogue/seen': undefined,
 };
 
+const checkoutFailure = 'The checkout total still showed euros after three attempts.';
+const notesStop = 'Stopped until the October changelog is final.';
+
+/**
+ * The Omarchy plugin preview (omarchy-plugin/preview.png): the README demo with three things waiting, which
+ * the bar's badge, its panel and the cockpit's "need you" count all show.
+ */
+export const demoNeedsYouResponses = {
+  ...demoResponses,
+  '/projects': [
+    ...demoResponses['/projects'],
+    {
+      id: 'field-notes',
+      name: 'field-notes',
+      repo: 'example-org/field-notes',
+      default_branch: 'main',
+      ci: 'no_ci',
+      paused: false,
+      last_work_at: 1790800440000,
+      done_goals: 4,
+      last_finished: null,
+    },
+  ] satisfies Reply<paths['/projects']['get']>,
+  '/goals': [
+    ...demoResponses['/goals'],
+    {
+      id: 'field-notes-goal',
+      project: 'field-notes',
+      text: 'Publish the October release notes.',
+      state: 'approved',
+    },
+  ] satisfies Reply<paths['/goals']['get']>,
+  '/tasks': [
+    ...demoResponses['/tasks'].filter((t) => t.id !== 'checkout'),
+    {
+      ...task('checkout', 'Show the converted total at checkout', 'backend', 'planned', null),
+      state: { state: 'failed', reason: checkoutFailure },
+      reason: checkoutFailure,
+    },
+    {
+      ...task('notes', 'Write the October release notes', 'frontend', 'planned', 5),
+      project: 'field-notes',
+      goal: 'field-notes-goal',
+      role: 'field-notes-frontend',
+      state: { state: 'stopped', was: { state: 'in_review' } },
+      reason: notesStop,
+    },
+  ] satisfies Reply<paths['/tasks']['get']>,
+  '/questions': [
+    {
+      id: 'rounding',
+      project: 'catalogue',
+      goal: 'catalogue-goal',
+      task: 'switcher',
+      subject: 'Round converted prices to whole units?',
+      format: 'quick_compare',
+      recommended: 1,
+      open: true,
+      options: [
+        { id: 1, text: 'Round to whole units', effect: 'Prices read like local prices.' },
+        { id: 2, text: 'Keep two decimals', effect: 'Prices match the exchange rate exactly.' },
+      ],
+      opened_at: 1790810940000,
+    },
+  ] satisfies Reply<paths['/questions']['get']>,
+  '/status': {
+    running: 2,
+    needs_you: 3,
+    tasks: [
+      {
+        id: 'checkout',
+        project: 'catalogue',
+        state: { state: 'failed', reason: checkoutFailure },
+        title: 'Show the converted total at checkout',
+        reason: checkoutFailure,
+      },
+      {
+        id: 'notes',
+        project: 'field-notes',
+        state: { state: 'stopped', was: { state: 'in_review' } },
+        title: 'Write the October release notes',
+        reason: notesStop,
+      },
+    ],
+  } satisfies Reply<paths['/status']['get']>,
+  '/github': {
+    connected: true,
+    organization: 'example-org',
+    install_url: null,
+    repository_access_url: null,
+    create_app: { status: 'succeeded' },
+    install_app: { status: 'succeeded' },
+  } satisfies Reply<paths['/github']['get']>,
+  '/projects/field-notes/roles': [] satisfies Reply<paths['/projects/{id}/roles']['get']>,
+  '/projects/field-notes/brief': { text: '' } satisfies Reply<paths['/projects/{id}/brief']['get']>,
+  '/projects/field-notes/issues': [] satisfies Reply<paths['/projects/{id}/issues']['get']>,
+  '/projects/field-notes/issues/counts': { open: 0, trusted: 0, labels: [] } satisfies Reply<
+    paths['/projects/{id}/issues/counts']['get']
+  >,
+};
+
 /** The colour roles the desk reads from each Omarchy theme's colors.toml, copied from Omarchy. */
 const omarchyThemes = {
   'tokyo-night': {
@@ -169,6 +270,7 @@ const omarchyThemes = {
 /** The theme screenshots (docs/themes/*.png): /theme.css as the desk serves it in each theme. */
 export const demoThemes = Object.entries(omarchyThemes).map(([name, colors]) => ({
   name,
+  colors,
   background: colors.background,
   css: `:root {\n${Object.entries(colors)
     .map(([key, value]) => `  --dvb-${key}: ${value};`)
