@@ -22,11 +22,13 @@ these library entry points.
 - `crates/dvb-cli/src/client.rs`: Unix HTTP client, refusals and event streaming.
 - `crates/dvb-cli/src/watch.rs`: `dvb watch` feed lines and JSON lines.
 - `crates/dvb-cli/src/wait.rs`: [`dvb wait`](../commands.md#waiting-on-a-goal).
-- `crates/dvb-cli/src/app.rs`: desk discovery, route validation and app launch.
+- `crates/dvb-cli/src/app.rs`: desk discovery, route validation and app launch;
+  `supervise_launch` is the hidden `dvb app-launch`, which reads the launch URL on stdin.
 - `crates/dvb-cli/src/update.rs`: owner update commands.
 - `crates/dvb-cli/src/doctor.rs`: [`dvb doctor`](../commands.md#setup-check).
 - `crates/dvb-cli/src/github.rs`: `dvb github connect` and the owner's git identity fallback.
-- `crates/dvb-desk/src/lib.rs`: browser/control routes, sessions, assets and proxy.
+- `crates/dvb-desk/src/lib.rs`: browser/control routes, sessions, expiring launch
+  tokens, assets and proxy.
 - `crates/dvb-desk/src/github_redirect.rs`: authenticated GitHub setup bridge and
   prefill, and GitHub's callback, answered from the engine's reply with plain desk
   pages (no session needed): the installation redirect, Connected, or failure.

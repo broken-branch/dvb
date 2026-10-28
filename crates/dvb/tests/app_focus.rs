@@ -1,16 +1,18 @@
 //! Offline recordings of Hyprland app classes and launch-only Omarchy commands.
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn script(dir: &Path, name: &str, body: &str) {
     executable::write_executable(&dir.join(name), body);
 }
 
-fn launch_for_clients(clients: &serde_json::Value, url: &str) -> String {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("clients.json"), clients.to_string()).unwrap();
+/// A fake Hyprland with these clients and a helper that records its arguments
+/// and those of its parent.
+fn fixture(dir: &Path, clients: &serde_json::Value) {
+    std::fs::write(dir.join("clients.json"), clients.to_string()).unwrap();
     script(
-        dir.path(),
+        dir,
         "hyprctl",
         r#"#!/bin/sh
 case "$1" in
@@ -21,20 +23,32 @@ esac
 "#,
     );
     script(
-        dir.path(),
+        dir,
         "omarchy-launch-webapp",
         r#"#!/bin/sh
 printf 'launch %s\n' "$1" >> "$FIXTURE_DIR/actions"
 printf '%s\n' "$@" > "$FIXTURE_DIR/launch-args"
+/bin/cat "/proc/$PPID/cmdline" > "$FIXTURE_DIR/parent"
+/bin/mv "$FIXTURE_DIR/parent" "$FIXTURE_DIR/supervisor-args"
 "#,
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_dvb"))
-        .args(["app-launch", url, "--helper"])
+}
+
+fn launch_for_clients(clients: &serde_json::Value, url: &str) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path(), clients);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dvb"))
+        .args(["app-launch", "--helper"])
         .arg(dir.path().join("omarchy-launch-webapp"))
         .env("PATH", dir.path())
         .env("FIXTURE_DIR", dir.path())
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
+    writeln!(child.stdin.take().unwrap(), "{url}").unwrap();
+    let output = child.wait_with_output().unwrap();
     assert!(output.status.success(), "{output:?}");
     let actions = std::fs::read_to_string(dir.path().join("actions")).unwrap();
     if actions.starts_with("launch ") {
@@ -48,10 +62,99 @@ printf '%s\n' "$@" > "$FIXTURE_DIR/launch-args"
             std::fs::read_to_string(dir.path().join("launch-args")).unwrap(),
             format!("{url}\n--profile-directory=dvb-127.0.0.1-{port}\n"),
         );
+        assert_eq!(output.stdout, b"started\n");
+        assert_no_token(&dir.path().join("supervisor-args"));
     } else {
         assert!(!dir.path().join("launch-args").exists());
+        assert_eq!(output.stdout, b"focused\n");
     }
     actions
+}
+
+fn assert_no_token(args: &Path) {
+    let args = String::from_utf8(std::fs::read(args).unwrap()).unwrap();
+    assert!(args.contains("app-launch"), "{args:?}");
+    assert!(!args.contains("token"), "{args:?}");
+}
+
+/// Runs `dvb app` against a fake desk control socket; the requests it made.
+async fn app_with_desk(
+    clients: serde_json::Value,
+    url: &'static str,
+) -> (Vec<String>, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path(), &clients);
+    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = requests.clone();
+    let listener = tokio::net::UnixListener::bind(dir.path().join("desk.sock")).unwrap();
+    let desk = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            axum::Router::new().route(
+                "/app",
+                axum::routing::get(move || async move { axum::Json(url) }).delete(
+                    move |uri: axum::http::Uri| async move {
+                        seen.lock().unwrap().push(uri.to_string());
+                        axum::http::StatusCode::NO_CONTENT
+                    },
+                ),
+            ),
+        )
+        .await
+        .unwrap();
+    });
+    let fixture_dir = dir.path().to_owned();
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(env!("CARGO_BIN_EXE_dvb"))
+            .arg("--sock")
+            .arg(fixture_dir.join("engine.sock"))
+            .arg("app")
+            .env("PATH", &fixture_dir)
+            .env("FIXTURE_DIR", &fixture_dir)
+            .env("WAYLAND_DISPLAY", "wayland-test")
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    desk.abort();
+    assert!(output.status.success(), "{output:?}");
+    let requests = requests.lock().unwrap().clone();
+    (requests, dir)
+}
+
+#[tokio::test]
+async fn dvb_app_passes_the_url_to_its_supervisor_off_the_argument_list() {
+    let url = "http://127.0.0.1:7300/launch?token=secret";
+    let (withdrawn, dir) = app_with_desk(serde_json::json!([]), url).await;
+    assert!(withdrawn.is_empty(), "{withdrawn:?}");
+    // `dvb app` stops watching the supervisor after its short startup check.
+    let recorded = dir.path().join("supervisor-args");
+    for _ in 0..500 {
+        if recorded.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("actions")).unwrap(),
+        format!("launch {url}\n"),
+    );
+    assert_no_token(&recorded);
+}
+
+#[tokio::test]
+async fn dvb_app_withdraws_the_link_when_it_only_focuses_the_open_cockpit() {
+    let clients = serde_json::json!([
+        {"class": "chrome-127.0.0.1__launch-dvb-127.0.0.1-7300", "title": "Cockpit", "address": "0x222"},
+    ]);
+    let url = "http://127.0.0.1:7300/launch?token=secret&route=/setup";
+    let (withdrawn, dir) = app_with_desk(clients, url).await;
+    assert_eq!(withdrawn, ["/app?token=secret"]);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("actions")).unwrap(),
+        "focus focuswindow address:0x222\n",
+    );
 }
 
 #[test]

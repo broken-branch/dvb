@@ -31,8 +31,23 @@ fn executable_in(name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     })
 }
 
-/// The URL is created by the local desk and passed as one command argument.
-pub fn launch(url: &str) -> Result<(), CliError> {
+/// What `launch` did with a desk launch URL.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Opened {
+    /// It focused an open cockpit; the URL's token was not redeemed.
+    Focused,
+    /// It handed the URL to the helper or browser.
+    Started,
+}
+
+/// The two answers `dvb app-launch` writes to its stdout.
+const FOCUSED: &str = "focused";
+const STARTED: &str = "started";
+
+/// The URL is created by the local desk. Other local users can read process
+/// arguments, so only the final helper or browser, which dvb does not control,
+/// gets it as an argument; the supervisor reads it from a pipe.
+pub fn launch(url: &str) -> Result<Opened, CliError> {
     if !has_display() {
         return Err(CliError::Message(format!(
             "no display (DISPLAY/WAYLAND_DISPLAY); cockpit: {url}"
@@ -47,35 +62,64 @@ pub fn launch(url: &str) -> Result<(), CliError> {
     ]
     .into_iter()
     .find_map(executable);
-    let child = if let Some(helper) = helper {
-        // A separate process survives the short-lived CLI. A thread would stop
-        // monitoring as soon as `dvb app` exits.
-        let mut command = Command::new(std::env::current_exe().map_err(message)?);
-        command
-            .args(["app-launch", url])
-            .arg("--helper")
-            .arg(helper);
-        if let Some(browser) = browser {
-            command.arg("--browser").arg(browser);
+    let cockpit = |error: CliError| CliError::Message(format!("{error}; cockpit: {url}"));
+    let Some(helper) = helper else {
+        if focused(url, executable("hyprctl").as_deref())? {
+            return Ok(Opened::Focused);
         }
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map(Some)
-            .map_err(message)
-    } else {
-        launch_with(
-            url,
-            None,
-            browser.as_deref(),
-            executable("hyprctl").as_deref(),
-        )
+        let child = launch_with(url, None, browser.as_deref()).map_err(cockpit)?;
+        return check_startup(child, url).map(|()| Opened::Started);
+    };
+    // A separate process survives the short-lived CLI. A thread would stop
+    // monitoring as soon as `dvb app` exits.
+    let mut command = Command::new(std::env::current_exe().map_err(message).map_err(cockpit)?);
+    command.arg("app-launch").arg("--helper").arg(helper);
+    if let Some(browser) = browser {
+        command.arg("--browser").arg(browser);
     }
-    .map_err(|error| CliError::Message(format!("{error}; cockpit: {url}")))?;
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(message)
+        .map_err(cockpit)?;
+    let answer = supervisor_answer(&mut child, url).map_err(cockpit)?;
+    if answer == FOCUSED {
+        child.wait().map_err(message)?;
+        return Ok(Opened::Focused);
+    }
     // The supervisor keeps monitoring a helper that outlives this check.
-    check_startup(child, url)
+    check_startup(Some(child), url).map(|()| Opened::Started)
+}
+
+/// Sends the URL and reads whether the supervisor focused or started; empty
+/// when it stopped first, which `check_startup` then reports.
+fn supervisor_answer(child: &mut std::process::Child, url: &str) -> Result<String, CliError> {
+    use std::io::{BufRead, Write};
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| CliError::Message("the launch supervisor has no input".into()))?;
+    writeln!(stdin, "{url}").map_err(message)?;
+    drop(stdin);
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CliError::Message("the launch supervisor has no output".into()))?;
+    let mut answer = String::new();
+    std::io::BufReader::new(stdout)
+        .read_line(&mut answer)
+        .map_err(message)?;
+    Ok(answer.trim_end().to_owned())
+}
+
+/// The launch token in a desk launch URL.
+pub fn launch_token(url: &str) -> Option<&str> {
+    url.split_once('?')?
+        .1
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("token="))
 }
 
 fn check_startup(child: Option<std::process::Child>, url: &str) -> Result<(), CliError> {
@@ -167,13 +211,29 @@ fn focus_app(profile: &str, hyprctl: &Path) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// Internal detached startup supervisor, invoked by the one dvb binary.
+fn profile(port: u16) -> String {
+    format!("dvb-127.0.0.1-{port}")
+}
+
+fn focused(url: &str, hyprctl: Option<&Path>) -> Result<bool, CliError> {
+    let profile = profile(validate_url(url)?);
+    Ok(hyprctl.is_some_and(|hyprctl| focus_app(&profile, hyprctl)))
+}
+
+/// Internal detached startup supervisor, invoked by the one dvb binary with
+/// the URL on its stdin. It answers `focused` or `started` before supervising.
 pub fn supervise_launch(
     url: &str,
     helper: Option<&Path>,
     browser: Option<&Path>,
+    answer: &mut dyn std::io::Write,
 ) -> Result<(), CliError> {
-    let child = launch_with(url, helper, browser, executable("hyprctl").as_deref())?;
+    if focused(url, executable("hyprctl").as_deref())? {
+        return writeln!(answer, "{FOCUSED}").map_err(message);
+    }
+    writeln!(answer, "{STARTED}").map_err(message)?;
+    answer.flush().map_err(message)?;
+    let child = launch_with(url, helper, browser)?;
     check_startup(child, url)
 }
 
@@ -181,14 +241,8 @@ fn launch_with(
     url: &str,
     helper: Option<&Path>,
     browser: Option<&Path>,
-    hyprctl: Option<&Path>,
 ) -> Result<Option<std::process::Child>, CliError> {
-    let port = validate_url(url)?;
-    let profile = format!("dvb-127.0.0.1-{port}");
-    if hyprctl.is_some_and(|hyprctl| focus_app(&profile, hyprctl)) {
-        return Ok(None);
-    }
-    let profile_arg = format!("--profile-directory={profile}");
+    let profile_arg = format!("--profile-directory={}", profile(validate_url(url)?));
     if let Some(helper) = helper {
         // Watch five seconds of startup in the detached supervisor, then leave
         // a still-running helper alone. It may stay attached for the browser's
@@ -245,7 +299,24 @@ pub fn parse_route(route: &str) -> Result<String, String> {
 /// `route` is a `parse_route` path: clap checks it, and the desk again.
 pub async fn open(target: &Target, route: Option<&str>) -> Result<(), CliError> {
     let path = route.map_or_else(|| "/app".to_owned(), |route| format!("/app?route={route}"));
-    launch(&desk_url(target, &path).await?)
+    let url = desk_url(target, &path).await?;
+    if launch(&url)? == Opened::Focused
+        && let Some(token) = launch_token(&url)
+    {
+        // The open cockpit already has its session: withdraw the unused link.
+        let reply = Client::new(control_socket(&target.sock()))
+            .raw(
+                hyper::Method::DELETE,
+                &format!("/app?token={token}"),
+                Vec::new(),
+                Duration::from_secs(5),
+            )
+            .await?;
+        if !reply.ok() {
+            return Err(CliError::Http(reply.status, reply.body));
+        }
+    }
+    Ok(())
 }
 
 /// The port of this engine's desk, which serves GitHub's setup callback.
@@ -463,7 +534,9 @@ mod tests {
             &format!("#!/bin/sh\nprintf ran > '{}'\nexit 1\n", marker.display()),
         );
         let url = "http://127.0.0.1:7300/launch?token=offline";
-        let result = supervise_launch(url, Some(&helper), Some(&browser));
+        let mut answer = Vec::new();
+        let result = supervise_launch(url, Some(&helper), Some(&browser), &mut answer);
+        assert_eq!(answer, b"started\n");
         assert!(result.is_err(), "{result:?}");
         let error = result.unwrap_err().to_string();
         assert!(error.contains("could not open a window"), "{error}");
@@ -482,11 +555,7 @@ mod tests {
                  '--profile-directory=dvb-127.0.0.1-7300' ]\n",
         );
         let url = "http://127.0.0.1:7300/launch?token=abc&route=/setup";
-        assert!(
-            launch_with(url, Some(&helper), None, None)
-                .unwrap()
-                .is_none()
-        );
+        assert!(launch_with(url, Some(&helper), None).unwrap().is_none());
         let fail = script(dir.path(), "fail", "#!/bin/sh\nexit 1\n");
         let browser = script(
             dir.path(),
@@ -495,15 +564,13 @@ mod tests {
                  '--app=http://127.0.0.1:7300/launch?token=abc&route=/setup' ] && [ \
                  \"$2\" = '--profile-directory=dvb-127.0.0.1-7300' ]\n",
         );
-        let mut child = launch_with(url, Some(&fail), Some(&browser), None)
+        let mut child = launch_with(url, Some(&fail), Some(&browser))
             .unwrap()
             .unwrap();
         assert!(child.wait().unwrap().success());
-        let mut child = launch_with(url, None, Some(&browser), None)
-            .unwrap()
-            .unwrap();
+        let mut child = launch_with(url, None, Some(&browser)).unwrap().unwrap();
         assert!(child.wait().unwrap().success());
-        assert!(launch_with(url, None, None, None).is_err());
+        assert!(launch_with(url, None, None).is_err());
         for url in [
             "http://evil.test/",
             "http://127.0.0.1:bad/launch",
@@ -511,7 +578,7 @@ mod tests {
             "http://127.0.0.1:7300/launch?token=$(bad)",
             "http://127.0.0.1:7300/launch?token=bad;command",
         ] {
-            assert!(launch_with(url, Some(&helper), Some(&browser), None).is_err());
+            assert!(launch_with(url, Some(&helper), Some(&browser)).is_err());
         }
     }
     #[test]
@@ -529,7 +596,7 @@ mod tests {
             &format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
         );
         let url = "http://127.0.0.1:7300/launch?token=abc";
-        let mut child = launch_with(url, Some(&helper), Some(&browser), None)
+        let mut child = launch_with(url, Some(&helper), Some(&browser))
             .unwrap()
             .expect("falls back to the browser");
         assert!(child.wait().unwrap().success());
@@ -546,7 +613,7 @@ mod tests {
             &format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", marker.display()),
         );
         let url = "http://127.0.0.1:7300/launch?token=abc";
-        let mut child = launch_with(url, Some(&helper), Some(&browser), None)
+        let mut child = launch_with(url, Some(&helper), Some(&browser))
             .unwrap()
             .expect("delayed failure must fall back");
         assert!(child.wait().unwrap().success());
@@ -569,11 +636,7 @@ mod tests {
             ),
         );
         let url = "http://127.0.0.1:7300/launch?token=abc";
-        assert!(
-            launch_with(url, Some(&helper), None, None)
-                .unwrap()
-                .is_none()
-        );
+        assert!(launch_with(url, Some(&helper), None).unwrap().is_none());
         // The helper writes its pid after launch returns.
         let pid = (0..500)
             .find_map(|_| {

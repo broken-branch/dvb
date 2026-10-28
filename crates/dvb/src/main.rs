@@ -31,10 +31,9 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         port: u16,
     },
-    /// Internal detached browser startup supervisor.
+    /// Internal detached browser startup supervisor; the launch URL comes on stdin.
     #[command(hide = true)]
     AppLaunch {
-        url: String,
         #[arg(long)]
         helper: Option<std::path::PathBuf>,
         #[arg(long)]
@@ -65,17 +64,25 @@ fn main() -> ExitCode {
                 std::process::Termination::report(dvb_core::RunOutcome::SetupFailed)
             }
         },
-        Cmd::AppLaunch {
-            url,
-            helper,
-            browser,
-        } => match dvb_cli::app::supervise_launch(&url, helper.as_deref(), browser.as_deref()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("dvb app: {e}");
-                ExitCode::FAILURE
+        Cmd::AppLaunch { helper, browser } => {
+            let mut url = String::new();
+            let launched = match std::io::stdin().read_line(&mut url) {
+                Ok(_) => dvb_cli::app::supervise_launch(
+                    url.trim_end(),
+                    helper.as_deref(),
+                    browser.as_deref(),
+                    &mut std::io::stdout(),
+                ),
+                Err(e) => Err(dvb_cli::client::CliError::Message(e.to_string())),
+            };
+            match launched {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("dvb app: {e}");
+                    ExitCode::FAILURE
+                }
             }
-        },
+        }
         Cmd::Engine => {
             let cfg = match &cli.target.dev {
                 Some(dir) => match std::env::current_exe() {

@@ -4,7 +4,8 @@
 //! to the engine's socket, and provides desktop theme and notifications; an
 //! installed desk keeps the owner's copy of the desktop entry and app icon current.
 //! The browser uses a session cookie set by a one-time launch URL, with `Host`
-//! and `Origin` checks; the engine never sees the browser.
+//! and `Origin` checks; the engine never sees the browser. A launch URL minted
+//! to open the app expires after `LAUNCH_LIFETIME_MS`.
 
 mod desktop;
 mod github_redirect;
@@ -20,6 +21,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use dvb_cli::client::AbortOnDrop;
 use dvb_cli::github::token;
+use dvb_core::{Clock, Timestamp};
 use rust_embed::RustEmbed;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -33,14 +35,25 @@ struct Ui;
 
 const COOKIE: &str = "dvb_session";
 
+/// A minted launch URL can reach process arguments that other local users read.
+/// This covers the helper's five-second startup watch and a cold browser start.
+const LAUNCH_LIFETIME_MS: i64 = 20_000;
+
+struct LaunchToken {
+    token: String,
+    /// None only for the link printed at start, which goes to stdout.
+    expires: Option<Timestamp>,
+}
+
 pub struct Desk {
     engine_sock: PathBuf,
     port: u16,
     /// The one-time launch token; taken on first use.
-    launch: Mutex<Option<String>>,
+    launch: Mutex<Option<LaunchToken>>,
     session: String,
     theme_path: Option<PathBuf>,
     navigation: tokio::sync::broadcast::Sender<String>,
+    clock: Arc<dyn Clock>,
 }
 
 type DeskState = Arc<Desk>;
@@ -50,10 +63,14 @@ impl Desk {
         Self {
             engine_sock,
             port,
-            launch: Mutex::new(Some(token())),
+            launch: Mutex::new(Some(LaunchToken {
+                token: token(),
+                expires: None,
+            })),
             session: token(),
             theme_path: theme::colors_path(),
             navigation: tokio::sync::broadcast::channel(16).0,
+            clock: Arc::new(dvb_core::SystemClock),
         }
     }
 
@@ -62,16 +79,28 @@ impl Desk {
         let launch = self.launch.lock().unwrap_or_else(dvb_core::sync::recover);
         launch
             .as_ref()
-            .map(|t| format!("http://127.0.0.1:{}/launch?token={t}", self.port))
+            .map(|l| format!("http://127.0.0.1:{}/launch?token={}", self.port, l.token))
     }
 
     /// Rotate and return the matching link in one critical section.
     fn rotate_launch(&self) -> String {
+        let expires = self.clock.now().plus_millis(LAUNCH_LIFETIME_MS);
         let mut launch = self.launch.lock().unwrap_or_else(dvb_core::sync::recover);
         let fresh = token();
         let url = format!("http://127.0.0.1:{}/launch?token={fresh}", self.port);
-        *launch = Some(fresh);
+        *launch = Some(LaunchToken {
+            token: fresh,
+            expires: Some(expires),
+        });
         url
+    }
+
+    /// Withdraws a link that only focused an open cockpit, unless a newer one replaced it.
+    fn withdraw_launch(&self, token: &str) {
+        let mut launch = self.launch.lock().unwrap_or_else(dvb_core::sync::recover);
+        if launch.as_ref().is_some_and(|l| l.token == token) {
+            *launch = None;
+        }
     }
 
     fn host_ok(&self, headers: &HeaderMap) -> bool {
@@ -204,7 +233,9 @@ async fn bind_control(path: &std::path::Path) -> std::io::Result<tokio::net::Uni
 }
 
 fn control_router(desk: DeskState) -> Router {
-    Router::new().route("/app", get(open_app)).with_state(desk)
+    Router::new()
+        .route("/app", get(open_app).delete(withdraw_app))
+        .with_state(desk)
 }
 
 async fn open_app(
@@ -218,6 +249,19 @@ async fn open_app(
         return Ok(axum::Json(url));
     }
     Ok(axum::Json(d.rotate_launch()))
+}
+
+async fn withdraw_app(
+    State(d): State<DeskState>,
+    Query(q): Query<HashMap<String, String>>,
+) -> StatusCode {
+    match q.get("token") {
+        Some(token) => {
+            d.withdraw_launch(token);
+            StatusCode::NO_CONTENT
+        }
+        None => StatusCode::BAD_REQUEST,
+    }
 }
 /// Authenticated desk-to-browser navigation; a subscription tracks an open cockpit.
 async fn desk_events(State(d): State<DeskState>, req: Request) -> Response {
@@ -270,17 +314,20 @@ async fn launch(
     if !d.host_ok(&headers) || !d.origin_ok(&Method::GET, &headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    let now = d.clock.now();
     let mut launch = d.launch.lock().unwrap_or_else(dvb_core::sync::recover);
-    if launch.is_none() || q.get("token") != launch.as_ref() {
-        return (
-            StatusCode::FORBIDDEN,
-            if launch.is_none() {
-                "This launch link was already used."
-            } else {
-                "A newer launch link replaced this one."
-            },
-        )
-            .into_response();
+    let refused = match launch.as_ref() {
+        None => Some("This launch link was already used."),
+        Some(l) if q.get("token") != Some(&l.token) => {
+            Some("A newer launch link replaced this one.")
+        }
+        Some(l) if l.expires.is_some_and(|expires| now >= expires) => {
+            Some("This launch link expired.")
+        }
+        Some(_) => None,
+    };
+    if let Some(refused) = refused {
+        return (StatusCode::FORBIDDEN, refused).into_response();
     }
     *launch = None;
     drop(launch);
@@ -395,7 +442,14 @@ fn mime_of(path: &str) -> &'static str {
 
 impl Desk {
     fn launch_item(&self, route: &str) -> Result<(), dvb_cli::client::CliError> {
-        dvb_cli::app::launch(&self.prepare_launch(route)?)
+        let url = self.prepare_launch(route)?;
+        if dvb_cli::app::launch(&url)? == dvb_cli::app::Opened::Focused
+            && let Some(token) = dvb_cli::app::launch_token(&url)
+        {
+            // The navigation channel carries the route to the open cockpit.
+            self.withdraw_launch(token);
+        }
+        Ok(())
     }
 
     fn prepare_launch(&self, route: &str) -> Result<String, dvb_cli::client::CliError> {
@@ -672,6 +726,90 @@ mod tests {
             .to_owned();
         assert!(cookie.starts_with(&format!("{COOKIE}={}", d.session)));
         assert_eq!(call(&d, req()).await.status(), StatusCode::FORBIDDEN);
+    }
+
+    async fn redeem(d: &DeskState, url: &str) -> Response {
+        call(
+            d,
+            Request::get(url.trim_start_matches("http://127.0.0.1:7300"))
+                .header("host", "127.0.0.1:7300")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+    }
+
+    async fn refusal(res: Response) -> String {
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let bytes = axum::body::to_bytes(res.into_body(), 4096).await.unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_minted_launch_link_works_once_and_expires_unredeemed() {
+        let clock = Arc::new(dvb_core::FakeClock::at(Timestamp(1_000_000)));
+        let d = Arc::new(Desk {
+            clock: clock.clone(),
+            ..Desk::new("/nonexistent/engine.sock".into(), 7300)
+        });
+        let url = d.rotate_launch();
+        clock.advance_millis(LAUNCH_LIFETIME_MS - 1);
+        assert_eq!(redeem(&d, &url).await.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            refusal(redeem(&d, &url).await).await,
+            "This launch link was already used."
+        );
+        for mint in [Desk::rotate_launch, |d: &Desk| {
+            d.prepare_launch("/setup").unwrap()
+        }] {
+            let url = mint(&d);
+            clock.advance_millis(LAUNCH_LIFETIME_MS);
+            assert_eq!(
+                refusal(redeem(&d, &url).await).await,
+                "This launch link expired."
+            );
+        }
+        // The link printed at start goes to stdout, not process arguments.
+        let d = Arc::new(Desk {
+            clock: clock.clone(),
+            ..Desk::new("/nonexistent/engine.sock".into(), 7300)
+        });
+        let started = d.launch_url().unwrap();
+        clock.advance_millis(100 * LAUNCH_LIFETIME_MS);
+        assert_eq!(redeem(&d, &started).await.status(), StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
+    async fn withdrawing_a_focus_only_link_leaves_no_valid_token() {
+        let d = desk();
+        let control = |method: Method, path: &str| {
+            control_router(d.clone()).oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+        let res = control(Method::GET, "/app?route=/setup").await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), 4096).await.unwrap();
+        let focused: String = serde_json::from_slice(&bytes).unwrap();
+        let newer = d.rotate_launch();
+        // A late withdrawal of the replaced link keeps the newer one.
+        let stale = dvb_cli::app::launch_token(&focused).unwrap();
+        let res = control(Method::DELETE, &format!("/app?token={stale}")).await;
+        assert_eq!(res.unwrap().status(), StatusCode::NO_CONTENT);
+        assert_eq!(d.launch_url().as_deref(), Some(newer.as_str()));
+        let token = dvb_cli::app::launch_token(&newer).unwrap();
+        let res = control(Method::DELETE, &format!("/app?token={token}")).await;
+        assert_eq!(res.unwrap().status(), StatusCode::NO_CONTENT);
+        assert!(d.launch_url().is_none());
+        assert_eq!(
+            refusal(redeem(&d, &newer).await).await,
+            "This launch link was already used."
+        );
+        let res = control(Method::DELETE, "/app").await;
+        assert_eq!(res.unwrap().status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
