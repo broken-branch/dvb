@@ -506,3 +506,80 @@ describe('commit author', () => {
     expect(screen.getByText('Commits show dvb <dvb@dvb.invalid>.')).toBeInTheDocument();
   });
 });
+
+describe('updates', () => {
+  it.each([
+    { info: { current: '0.1.0' }, result: 'Up to date' },
+    { info: { current: '0.1.0', available: '0.1.1' }, result: 'Available: 0.1.1' },
+  ])('announces checking and then $result in the same polite region', async ({ info, result }) => {
+    const source = createFixtureSource();
+    let answer!: (response: Response) => void;
+    source.fetch.mockImplementationOnce(
+      (input) =>
+        new Promise((resolve) => {
+          expect(String(input)).toBe('/api/update?check=true');
+          answer = resolve;
+        }),
+    );
+    mount(<Settings tab="updates" />, source);
+    const status = screen.getByRole('status');
+    expect(status).toHaveAttribute('aria-live', 'polite');
+    expect(status).toHaveAttribute('aria-atomic', 'true');
+    expect(status).toHaveTextContent('Checking for a newer release…');
+    expect(screen.queryByText('Up to date')).not.toBeInTheDocument();
+    act(() => answer(json(info)));
+    expect(await screen.findByText(result)).toBeInTheDocument();
+    expect(screen.getByRole('status')).toBe(status);
+    expect(status).toHaveTextContent(result);
+    expect(screen.queryByText('Checking for a newer release…')).not.toBeInTheDocument();
+  });
+  it('names the newer release the check found and starts the update', async () => {
+    const source = createFixtureSource();
+    source.replies['/update'] = { current: '0.1.0', available: '0.1.1' };
+    source.replies['POST /update'] = {
+      current: '0.1.0',
+      available: '0.1.1',
+      updating: { to: '0.1.1', runs_active: 0 },
+    };
+    const { user } = mount(<Settings tab="updates" />, source);
+    const status = screen.getByRole('status');
+    expect(await screen.findByText('Available: 0.1.1')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toBe(status);
+    expect(status).toHaveTextContent('Available: 0.1.1');
+    await user.click(screen.getByRole('button', { name: 'Update dvb' }));
+    expect(await screen.findByText('Updating to 0.1.1')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toBe(status);
+    expect(status).toHaveTextContent('Updating to 0.1.1');
+    expect(screen.getByRole('button', { name: 'Update dvb' })).toBeDisabled();
+  });
+  it('shows an update under way from the check answer', async () => {
+    const source = createFixtureSource();
+    source.replies['/update'] = {
+      current: '0.1.0',
+      available: '0.1.1',
+      updating: { to: '0.1.1', runs_active: 2 },
+    };
+    mount(<Settings tab="updates" />, source);
+    const status = screen.getByRole('status');
+    expect(await screen.findByText('Updating to 0.1.1')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toBe(status);
+    expect(status).toHaveTextContent('Updating to 0.1.1');
+    expect(screen.getByRole('button', { name: 'Update dvb' })).toBeDisabled();
+  });
+  it('shows why the check failed and never says up to date', async () => {
+    const source = createFixtureSource();
+    source.replies['/update'] = {
+      code: 'UPDATE_REFUSED',
+      detail: 'the release list could not be read',
+    };
+    source.statuses['/update'] = 502;
+    mount(<Settings tab="updates" />, source);
+    const status = screen.getByRole('status');
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The update check failed: the release list could not be read',
+    );
+    expect(screen.queryByText('Up to date')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toBe(status);
+    expect(status).toBeEmptyDOMElement();
+  });
+});

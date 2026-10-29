@@ -29,7 +29,8 @@ function endpoints(
     verdict: (id: Schemas['TaskId']) => call('/tasks/{id}/verdict', 'get', { params: { id } }),
     usage: (filter?: NonNullable<paths['/usage']['get']['parameters']['query']>) =>
       call('/usage', 'get', { query: filter }),
-    update: () => call('/update', 'get'),
+    // Reads the release list now; during an update the engine answers from its progress.
+    updateCheck: () => call('/update', 'get', { query: { check: true } }),
     github: (signal?: AbortSignal) => call('/github', 'get', { signal }),
     githubRepositories: (signal?: AbortSignal) => call('/github/repositories', 'get', { signal }),
     discoverChecks: (repo: string, signal?: AbortSignal) =>

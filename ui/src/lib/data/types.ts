@@ -26,6 +26,7 @@ type ExplicitChartDestination<T> = T extends unknown
   : never;
 export type ChartMove = ExplicitChartDestination<Schemas['ChartMove']>;
 export type Usage = Schemas['Usage'];
+export type UpdateInfo = Schemas['UpdateInfo'];
 export type LoginStarted = Schemas['LoginStarted'];
 export type Logins = Schemas['Logins'];
 export type ReportKind = Schemas['ReportKind'];

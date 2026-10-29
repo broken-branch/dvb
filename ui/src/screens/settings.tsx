@@ -18,7 +18,7 @@ import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { useAppearance, textSizes } from '@/lib/appearance';
 import { palettes, themeName, contrast } from '@/lib/theme';
-import type { SettingsKey } from '@/lib/data/types';
+import type { SettingsKey, UpdateInfo } from '@/lib/data/types';
 import { HistoryButton } from '@/components/dvb/history-sheet';
 import { LoginStep } from '@/components/dvb/login-step';
 import { useStore, go } from '@/lib/store';
@@ -210,13 +210,50 @@ function Publication() {
     </form>
   );
 }
+function Updates() {
+  const { data: s, canWrite } = useStore(),
+    action = useAction(),
+    check = useRead(() => s.updateCheck(), [s.updateCheck]),
+    [started, setStarted] = useState<UpdateInfo>(),
+    info = started ?? check.value;
+  return (
+    <Card className="settings-panel">
+      <h2>Update dvb</h2>
+      {info && <p>Installed: {info.current}</p>}
+      <DataError message={check.error && `The update check failed: ${check.error}`} />
+      <div className="actions">
+        <div role="status" aria-live="polite" aria-atomic="true">
+          {info ? (
+            <Status tone={info.updating ? 'working' : info.available ? 'neutral' : 'good'}>
+              {info.updating
+                ? `Updating to ${info.updating.to}`
+                : info.available
+                  ? `Available: ${info.available}`
+                  : 'Up to date'}
+            </Status>
+          ) : (
+            !check.error && <p>Checking for a newer release…</p>
+          )}
+        </div>
+        {info && (
+          <Button
+            disabled={action.busy || !canWrite || !!info.updating || !info.available}
+            onClick={() => void action.act(() => s.startUpdate(), setStarted)}
+          >
+            Update dvb
+          </Button>
+        )}
+      </div>
+      <DataError message={action.error} />
+    </Card>
+  );
+}
 export function Settings({ tab = 'appearance' }: { tab?: string }) {
   const { data: s, canWrite, settings: values } = useStore(),
     a = useAppearance(),
     action = useAction();
 
-  const update = useRead(() => s.update(), [s.update]),
-    disabled = action.busy || !canWrite;
+  const disabled = action.busy || !canWrite;
   const save = (key: SettingsKey, value: unknown) => {
     void action.act(() => s.changeSettings({ values: { [key]: value } }));
   };
@@ -505,30 +542,7 @@ export function Settings({ tab = 'appearance' }: { tab?: string }) {
           {
             id: 'updates',
             label: 'Updates',
-            content: (
-              <Card className="settings-panel">
-                <h2>Update dvb</h2>
-                <DataError message={update.error} />
-                {update.value && (
-                  <>
-                    <p>Installed: {update.value.current}</p>
-                    <div className="actions">
-                      <Status>
-                        {update.value.available
-                          ? `Available: ${update.value.available}`
-                          : 'Up to date'}
-                      </Status>
-                      <Button
-                        disabled={disabled || !update.value.available}
-                        onClick={() => void action.act(() => s.startUpdate())}
-                      >
-                        Update dvb
-                      </Button>
-                    </div>
-                  </>
-                )}
-              </Card>
-            ),
+            content: <Updates />,
           },
         ]}
       />
