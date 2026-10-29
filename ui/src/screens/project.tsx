@@ -30,7 +30,7 @@ import { go, useStore } from '@/lib/store';
 import type { Goal, Project, Question } from '@/lib/data/types';
 import { currentGoals, projectGoal, lastGoalText } from '@/lib/data/selectors';
 import { useEventPages } from '@/lib/data/pages';
-import { failedGoal, goalTitle, problems, taskNote, workLabels } from '@/lib/data/work';
+import { failedGoal, goalTitle, needLabels, problems, taskNote, workLabels } from '@/lib/data/work';
 /** The goal editor: a first or new goal, a goal after the current ones, or a new course for one goal. */
 type GoalEdit = { kind: 'set' | 'next' } | { kind: 'course'; goal: Goal };
 export function ProjectPage({ id, tab = 'board' }: { id: string; tab?: string }) {
@@ -198,7 +198,7 @@ export function ProjectPage({ id, tab = 'board' }: { id: string; tab?: string })
               })}
             </Status>
           ) : planWaits ? (
-            <Status tone={workLabels.attention.tone}>{workLabels.attention.rail}</Status>
+            <Status tone={workLabels.attention.tone}>{needLabels.question}</Status>
           ) : g?.plan_parked ? (
             <Status>{workLabels.parked.label}</Status>
           ) : (

@@ -40,20 +40,44 @@ export function problems(s: DataStore, p: Project) {
       t.project === p.id && ['failed', 'stopped'].includes(t.state.state) && !t.problem_superseded,
   );
 }
-const needsCache = new WeakMap<DataStore, Map<string, number>>();
-export function needs(s: DataStore, p: Project) {
-  let counts = needsCache.get(s);
-  if (!counts) {
-    counts = new Map();
+type Need = 'question' | 'stopped' | 'failed';
+const needsCache = new WeakMap<DataStore, Map<string, Need[]>>();
+/** Why each item under Needs you is there, by project: an open question, or a stopped or failed task. */
+function projectNeeds(s: DataStore, p: Project) {
+  let byProject = needsCache.get(s);
+  if (!byProject) {
+    byProject = new Map();
     const { questions, faults } = needsYou(s);
-    for (const project of [
-      ...questions.map((q) => q.project),
-      ...faults.map((f) => f.task.project),
+    for (const [project, need] of [
+      ...questions.map((q) => [q.project, 'question'] as const),
+      ...faults.map(
+        (f) =>
+          [
+            f.task.project,
+            f.question ? 'question' : f.task.state.state === 'failed' ? 'failed' : 'stopped',
+          ] as const,
+      ),
     ])
-      counts.set(project, (counts.get(project) ?? 0) + 1);
-    needsCache.set(s, counts);
+      byProject.set(project, [...(byProject.get(project) ?? []), need]);
+    needsCache.set(s, byProject);
   }
-  return counts.get(p.id) ?? 0;
+  return byProject.get(p.id) ?? [];
+}
+export const needs = (s: DataStore, p: Project) => projectNeeds(s, p).length;
+export const needLabels = {
+  question: 'Waiting for your answer',
+  stopped: { one: 'Task stopped', many: 'Tasks stopped' },
+  failed: { one: 'Task failed', many: 'Tasks failed' },
+} as const;
+/** Says why the project needs you; reasons of more than one kind read as plain Needs you. */
+function needText(s: DataStore, p: Project) {
+  const all = projectNeeds(s, p),
+    kinds = new Set(all);
+  if (kinds.size !== 1) return workLabels.attention.rail;
+  const [kind] = kinds;
+  return kind === 'question'
+    ? needLabels.question
+    : needLabels[kind][all.length === 1 ? 'one' : 'many'];
 }
 /** The project's last goal, by stated order, when it ended failed and its failed or stopped tasks still count. */
 export function failedGoal(s: DataStore, p: Project): Goal | undefined {
@@ -71,7 +95,7 @@ export const workLabels = {
   paused: { label: 'Paused', rail: 'Paused', tone: 'neutral' },
   working: { label: 'Working', rail: 'Working', tone: 'working' },
   failed: { label: 'Goal failed', rail: 'Goal failed', tone: 'bad' },
-  attention: { label: 'Needs you', rail: 'Waiting for your answer', tone: 'warn' },
+  attention: { label: 'Needs you', rail: 'Needs you', tone: 'warn' },
   parked: { label: word('goal.plan_parked'), rail: word('goal.plan_parked'), tone: 'neutral' },
   quiet: { label: 'Quiet', rail: '', tone: 'neutral' },
   ready: { label: 'Ready', rail: '', tone: 'neutral' },
@@ -101,6 +125,7 @@ export function railGroups(s: DataStore, now: number) {
 export function railStatus(s: DataStore, p: Project, now: number) {
   const state = workState(s, p, now);
   if (state === 'working') return stateLabels[activeTask(s, p)!.state.state];
+  if (state === 'attention') return needText(s, p);
   if (workLabels[state].rail) return workLabels[state].rail;
   if (!p.last_work_at) return 'No work yet';
   const day = new Date(now);

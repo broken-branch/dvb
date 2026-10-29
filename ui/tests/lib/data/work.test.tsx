@@ -2,7 +2,7 @@ import { vi } from 'vitest';
 import { beforeEach } from 'vitest';
 import { describe, expect, it } from 'vitest';
 import { createFixtureSource } from '../../support/render';
-import { railGroups, sevenDays, relative, needs } from '@/lib/data/work';
+import { railGroups, railStatus, sevenDays, relative, needs } from '@/lib/data/work';
 beforeEach(() => vi.spyOn(Date, 'now').mockReturnValue(1790811300000));
 describe('work navigation', () => {
   it('uses the exact seven-day quiet boundary', () => {
@@ -99,4 +99,46 @@ it('counts attention once across projects and refreshes with the next store snap
   source.set({ questions: [] });
   expect(needs(source.getSnapshot(), projects[0])).toBe(0);
   expect(needs(snapshot, projects[0])).toBe(1);
+});
+
+describe('why a project needs you', () => {
+  const source = createFixtureSource(),
+    s = source.getSnapshot(),
+    p = s.projects[0],
+    question = { ...s.questions[0], id: 'q', project: p.id, open: true },
+    fault = (id: string, state: 'stopped' | 'failed') => ({
+      id,
+      project: p.id,
+      title: id,
+      state: { state } as never,
+    }),
+    rail = (questions: (typeof question)[], tasks: ReturnType<typeof fault>[]) =>
+      railStatus(
+        {
+          ...s,
+          tasks: [],
+          goals: [],
+          questions,
+          status: { ...s.status, tasks },
+        },
+        p,
+        Date.now(),
+      );
+  it.each([
+    ['an open question', [question], [], 'Waiting for your answer'],
+    ['a stopped task', [], [fault('a', 'stopped')], 'Task stopped'],
+    ['stopped tasks', [], [fault('a', 'stopped'), fault('b', 'stopped')], 'Tasks stopped'],
+    ['a failed task', [], [fault('a', 'failed')], 'Task failed'],
+    ['failed tasks', [], [fault('a', 'failed'), fault('b', 'failed')], 'Tasks failed'],
+    [
+      'a stopped task that asks',
+      [question],
+      [{ ...fault('a', 'stopped'), question: 'q' }],
+      'Waiting for your answer',
+    ],
+    ['a question and a stopped task', [question], [fault('a', 'stopped')], 'Needs you'],
+    ['a stopped and a failed task', [], [fault('a', 'stopped'), fault('b', 'failed')], 'Needs you'],
+  ])('reads %s', (_, questions, tasks, label) => {
+    expect(rail(questions, tasks)).toBe(label);
+  });
 });
