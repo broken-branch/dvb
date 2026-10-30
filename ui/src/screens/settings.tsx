@@ -23,7 +23,7 @@ import { HistoryButton } from '@/components/dvb/history-sheet';
 import { LoginStep } from '@/components/dvb/login-step';
 import { useStore, go } from '@/lib/store';
 import { word } from '@/lib/data/display';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 function Appearance() {
   const a = useAppearance(),
     { canWrite } = useStore();
@@ -213,9 +213,28 @@ function Publication() {
 function Updates() {
   const { data: s, canWrite } = useStore(),
     action = useAction(),
-    check = useRead(() => s.updateCheck(), [s.updateCheck]),
+    [refresh, setRefresh] = useState(0),
+    check = useRead(() => s.updateCheck(), [s.updateCheck, refresh]),
     [started, setStarted] = useState<UpdateInfo>(),
-    info = started ?? check.value;
+    [after, setAfter] = useState(() => s.events.at(-1)?.id ?? 0),
+    info = started ?? check.value,
+    outcome = s.events.findLast(
+      (e) => e.id > after && (e.kind === 'engine.updated' || e.kind === 'engine.update_failed'),
+    ),
+    failure = outcome?.kind === 'engine.update_failed' ? word(outcome.kind, outcome.payload) : '',
+    updating = !failure && info?.updating,
+    version = 'engineVersion' in s.connection ? s.connection.engineVersion : undefined,
+    previous = useRef({ state: s.connection.state, version });
+  useEffect(() => {
+    const returned =
+      s.connection.state !== 'reconnecting' &&
+      (previous.current.state === 'reconnecting' || previous.current.version !== version);
+    previous.current = { state: s.connection.state, version };
+    if (returned && info?.updating) {
+      setStarted(undefined);
+      setRefresh((value) => value + 1);
+    }
+  }, [s.connection.state, version, info?.updating]);
   return (
     <Card className="settings-panel">
       <h2>Update dvb</h2>
@@ -223,10 +242,12 @@ function Updates() {
       <DataError message={check.error && `The update check failed: ${check.error}`} />
       <div className="actions">
         <div role="status" aria-live="polite" aria-atomic="true">
-          {info ? (
-            <Status tone={info.updating ? 'working' : info.available ? 'neutral' : 'good'}>
-              {info.updating
-                ? `Updating to ${info.updating.to}`
+          {failure ? (
+            <Status tone="bad">{failure}</Status>
+          ) : info ? (
+            <Status tone={updating ? 'working' : info.available ? 'neutral' : 'good'}>
+              {updating
+                ? `Updating to ${updating.to}`
                 : info.available
                   ? `Available: ${info.available}`
                   : 'Up to date'}
@@ -237,8 +258,11 @@ function Updates() {
         </div>
         {info && (
           <Button
-            disabled={action.busy || !canWrite || !!info.updating || !info.available}
-            onClick={() => void action.act(() => s.startUpdate(), setStarted)}
+            disabled={action.busy || !canWrite || !!updating || !info.available}
+            onClick={() => {
+              setAfter(s.events.at(-1)?.id ?? 0);
+              void action.act(() => s.startUpdate(), setStarted);
+            }}
           >
             Update dvb
           </Button>

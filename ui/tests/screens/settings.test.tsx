@@ -6,6 +6,7 @@ import { createFixtureSource } from '../support/render';
 import { Settings } from '@/screens/settings';
 import { mount } from '../support/render';
 import { createLiveSource } from '@/lib/data/api';
+import { event } from '../support/rows';
 describe('model mode', () => {
   it('selects model mode with Radix keyboard navigation and restores the saved choice', async () => {
     const { source, user } = mount(<Settings tab="models" />);
@@ -566,6 +567,84 @@ describe('updates', () => {
     expect(status).toHaveTextContent('Updating to 0.1.1');
     expect(screen.getByRole('button', { name: 'Update dvb' })).toBeDisabled();
   });
+  it.each([false, true])(
+    'refreshes the installed version after the engine returns (already updating: %s)',
+    async (alreadyUpdating) => {
+      const source = createFixtureSource();
+      const updating = {
+        current: '0.1.0',
+        available: '0.1.1',
+        updating: { to: '0.1.1', runs_active: 0 },
+      };
+      source.replies['/update'] = alreadyUpdating
+        ? updating
+        : { current: '0.1.0', available: '0.1.1' };
+      source.replies['POST /update'] = updating;
+      const check = vi.spyOn(source.getSnapshot(), 'updateCheck');
+      const { user } = mount(<Settings tab="updates" />, source);
+      if (!alreadyUpdating) {
+        await screen.findByText('Available: 0.1.1');
+        await user.click(screen.getByRole('button', { name: 'Update dvb' }));
+      }
+      expect(await screen.findByText('Updating to 0.1.1')).toBeInTheDocument();
+      act(() => source.set({ connection: { state: 'reconnecting' } }));
+      expect(check).toHaveBeenCalledTimes(1);
+      expect(screen.getByText('Updating to 0.1.1')).toBeInTheDocument();
+      source.replies['/update'] = { current: '0.1.1', available: '0.1.2' };
+      const connection = {
+        state: 'version-mismatch' as const,
+        engineVersion: '0.1.1',
+        appVersion: '0.1.0',
+      };
+      act(() => source.set({ connection }));
+      expect(await screen.findByText('Installed: 0.1.1')).toBeInTheDocument();
+      expect(screen.getByRole('status')).toHaveTextContent('Available: 0.1.2');
+      expect(screen.queryByText(/Updating to/)).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Update dvb' })).toBeDisabled();
+      act(() => source.set({ connection: { ...connection } }));
+      expect(check).toHaveBeenCalledTimes(2);
+    },
+  );
+  it.each([false, true])(
+    'shows the engine failure reason and permits another attempt (reconnect: %s)',
+    async (reconnect) => {
+      const source = createFixtureSource();
+      source.replies['/update'] = { current: '0.1.0', available: '0.1.1' };
+      source.replies['POST /update'] = {
+        current: '0.1.0',
+        available: '0.1.1',
+        updating: { to: '0.1.1', runs_active: 0 },
+      };
+      const { user } = mount(<Settings tab="updates" />, source);
+      await screen.findByText('Available: 0.1.1');
+      await user.click(screen.getByRole('button', { name: 'Update dvb' }));
+      expect(await screen.findByText('Updating to 0.1.1')).toBeInTheDocument();
+      if (reconnect) act(() => source.set({ connection: { state: 'reconnecting' } }));
+      act(() =>
+        source.set({
+          connection: { state: 'connected', engineVersion: '0.1.0' },
+          events: [
+            ...source.getSnapshot().events,
+            event(1000, 'engine.update_failed', {
+              from: '0.1.0',
+              to: '0.1.1',
+              reason: 'The replacement binary failed its health check',
+            }),
+          ],
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.getByRole('status')).toHaveTextContent(
+          'Update to 0.1.1 did not work and was undone: The replacement binary failed its health check',
+        ),
+      );
+      expect(screen.getByText('Installed: 0.1.0')).toBeInTheDocument();
+      expect(screen.queryByText(/Updating to/)).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Update dvb' }));
+      expect(await screen.findByText('Updating to 0.1.1')).toBeInTheDocument();
+      expect(screen.queryByText(/The replacement binary failed/)).not.toBeInTheDocument();
+    },
+  );
   it('shows why the check failed and never says up to date', async () => {
     const source = createFixtureSource();
     source.replies['/update'] = {
