@@ -12,7 +12,10 @@ post_upgrade() {
   if systemctl is-active --quiet dvb.service 2>/dev/null; then
     systemctl daemon-reload
     systemctl try-restart dvb.service
-    echo "dvb: engine restarted on ${1%-*}. Restart the cockpit with: systemctl --user restart dvb-desk.service"
+    local name
+    name=$(getent passwd "$(cat /var/lib/dvb/state/owner 2>/dev/null)" | cut -d: -f1) || true
+    [ -z "$name" ] || systemctl --user -M "$name@" try-restart dvb-desk.service 2>/dev/null || true
+    echo "dvb: engine restarted on ${1%-*}."
   fi
 }
 

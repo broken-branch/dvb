@@ -13,7 +13,7 @@ pkgdesc="dvb, an autonomous coding-agent system for one owner (engine service an
 arch=('x86_64')
 url="https://github.com/broken-branch/dvb"
 license=('MIT')
-depends=('glibc' 'gcc-libs' 'systemd' 'polkit' 'git' 'openssh' 'sccache')
+depends=('glibc' 'gcc-libs' 'systemd' 'polkit' 'git' 'openssh' 'sccache' 'hicolor-icon-theme')
 makedepends=('minisign')
 optdepends=('claude-code: runs on Claude models (needed by the default hires)'
             'openai-codex: runs on Codex models'
@@ -22,6 +22,8 @@ optdepends=('claude-code: runs on Claude models (needed by the default hires)'
             'mise: runs use the Node version a project pins')
 provides=('dvb')
 conflicts=('dvb')
+# Install the signed binary as released, and build no empty debug package.
+options=('!strip' '!debug')
 backup=()
 install=dvb-bin.install
 _tag="v${pkgver}"
@@ -48,7 +50,10 @@ _minisign_pub='RWTjH9NnSuEaBQuNBtQcKYU0ncGpKL4DyoiuSJV8xcEXuC8DpC9NBvna'
 
 verify() {
   # The same check install.sh makes: the signature on SHA256SUMS, then the
-  # tarball's checksum against it.
+  # tarball's checksum against it. makepkg runs this before it links the
+  # sources into $srcdir, from $startdir; they are in $SRCDEST, which is
+  # $startdir unless makepkg.conf sets it.
+  cd "${SRCDEST}"
   minisign -Vm "SHA256SUMS-${pkgver}" -x "SHA256SUMS-${pkgver}.minisig" -P "${_minisign_pub}"
   grep " dvb-${pkgver}-x86_64-linux.tar.gz\$" "SHA256SUMS-${pkgver}" | sha256sum -c -
 }

@@ -554,7 +554,7 @@ pub enum ProjectVerb {
         no_ci: bool,
         names: Vec<String>,
     },
-    /// Add a project: a GitHub `owner/name`, or a local repo path with the Fake forge.
+    /// Add a project: a GitHub `owner/name`, or a local repo path only on a dev-mode engine (`dvb engine --dev`).
     Add {
         name: String,
         #[arg(long)]

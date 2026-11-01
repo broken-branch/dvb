@@ -219,7 +219,9 @@ async fn feed_text(client: &Client, event: &Event) -> Result<Option<String>, Cli
     };
     let roles: Vec<RoleRecord> = match client.get(&format!("/projects/{project}/roles")).await {
         Ok(roles) => roles,
-        Err(CliError::Refused(r)) if r.code == RefusalCode::NotFound => {
+        Err(CliError::Refused(r))
+            if matches!(r.code, RefusalCode::NotFound | RefusalCode::ProjectUnknown) =>
+        {
             return Ok(Some(text.clone()));
         }
         Err(error) => return Err(error),
@@ -254,14 +256,20 @@ pub async fn line(client: &Client, event: &Event) -> Result<String, CliError> {
         .await
     {
         Ok(project) => project.name,
-        Err(CliError::Refused(r)) if r.code == RefusalCode::NotFound => project.to_string(),
+        Err(CliError::Refused(r))
+            if matches!(r.code, RefusalCode::NotFound | RefusalCode::ProjectUnknown) =>
+        {
+            project.to_string()
+        }
         Err(error) => return Err(error),
     };
     let mut text = format!("{} ({project_name})", text.unwrap_or_default());
     if let EventKind::RoleChanged { role, .. } = &event.kind {
         let history: RoleHistory = match client.get(&format!("/roles/{}/history", role.id)).await {
             Ok(history) => history,
-            Err(CliError::Refused(r)) if r.code == RefusalCode::NotFound => {
+            Err(CliError::Refused(r))
+                if matches!(r.code, RefusalCode::NotFound | RefusalCode::ProjectUnknown) =>
+            {
                 return Ok(crate::event_line(event, Some(text)));
             }
             Err(error) => return Err(error),
@@ -508,7 +516,7 @@ mod tests {
                     "/events/recent" => test_http::json(200, page.clone()),
                     "/projects/project-id" | "/projects/project-id/roles" => test_http::json(
                         404,
-                        json!({"code": "NOT_FOUND", "detail": "project project-id"}),
+                        json!({"code": "PROJECT_UNKNOWN", "detail": "no project project-id"}),
                     ),
                     path => panic!("unexpected path: {path}"),
                 };
@@ -555,7 +563,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_refusals_only_fall_back_for_not_found() {
+    async fn context_refusals_only_fall_back_for_missing_context() {
         for path in [
             "/projects/project-id",
             "/projects/project-id/roles",
@@ -563,6 +571,7 @@ mod tests {
         ] {
             for code in [
                 dvb_core::RefusalCode::NotFound,
+                dvb_core::RefusalCode::ProjectUnknown,
                 dvb_core::RefusalCode::UpdateRefused,
             ] {
                 let dir = tempfile::tempdir().unwrap();
@@ -609,7 +618,10 @@ mod tests {
                 let event = event(kind);
                 let result = line(&Client::new(sock), &event).await;
                 server.abort();
-                if code == dvb_core::RefusalCode::NotFound {
+                if matches!(
+                    code,
+                    dvb_core::RefusalCode::NotFound | dvb_core::RefusalCode::ProjectUnknown
+                ) {
                     let text = crate::feed_word(&event.kind).unwrap();
                     let expected = match path {
                         "/projects/project-id" => format!("{text} (project-id)"),
