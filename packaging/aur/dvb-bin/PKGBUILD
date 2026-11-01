@@ -51,8 +51,8 @@ _minisign_pub='RWTjH9NnSuEaBQuNBtQcKYU0ncGpKL4DyoiuSJV8xcEXuC8DpC9NBvna'
 verify() {
   # The same check install.sh makes: the signature on SHA256SUMS, then the
   # tarball's checksum against it. makepkg runs this before it links the
-  # sources into $srcdir, from $startdir; they are in $SRCDEST, which is
-  # $startdir unless makepkg.conf sets it.
+  # sources into $srcdir, from the PKGBUILD's folder; they are in $SRCDEST, which is
+  # the PKGBUILD's folder unless makepkg.conf sets it.
   cd "${SRCDEST}"
   minisign -Vm "SHA256SUMS-${pkgver}" -x "SHA256SUMS-${pkgver}.minisig" -P "${_minisign_pub}"
   grep " dvb-${pkgver}-x86_64-linux.tar.gz\$" "SHA256SUMS-${pkgver}" | sha256sum -c -

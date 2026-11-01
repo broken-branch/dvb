@@ -31,6 +31,19 @@ forks, and how runs get toolchains.
   vendor, and a limited vendor's runs can move to the orchestrator's vendor
   (`vendor_fallback`) instead of waiting for its limit to reset.
 
+For a Codex-only setup, replace the Claude login step with these commands, in
+order, before `dvb project add`:
+
+```sh
+dvb settings set model_pool '["gpt-6.1-sol"]'
+dvb login codex
+dvb doctor
+```
+
+This sets the model for projects added after it. A project's default hires take
+the first selected catalogue model when it is added; changing `model_pool` later
+does not change those hires.
+
 The installer installs missing prerequisites with pacman. On other distributions,
 without pacman, the installer stops before changing anything if a tool it uses is
 missing, and lists those tools for you to install yourself. The CLIs, Chromium

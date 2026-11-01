@@ -75,6 +75,15 @@ run `dvb login codex`, open the link, sign in and enter the device code printed
 by the command on that page. These logins belong to dvb and are separate from
 your own `claude` and `codex` logins; `dvb doctor` shows anything setup still needs.
 
+For a Codex-only setup, replace the Claude login step with these commands, in
+order, before `dvb project add`. This sets the model for projects added after it:
+
+```sh
+dvb settings set model_pool '["gpt-6.1-sol"]'
+dvb login codex
+dvb doctor
+```
+
 **5. Add the project and state a goal.**
 
 ```sh
