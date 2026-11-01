@@ -1276,12 +1276,18 @@ async fn recovered_memory_clears_resource_status_while_admission_still_holds_the
         let (status, body) = support::http::request(&e, Method::GET, "/tasks/t", None).await;
         assert_eq!(status, StatusCode::OK);
         let view: TaskView = serde_json::from_slice(&body).unwrap();
-        assert_eq!(view.reason, None);
+        // The vendor's hold says so; the update's hold has no reason of its own.
+        let held = vendor_hold.then_some("Waiting for a usage limit");
+        assert_eq!(view.reason.as_deref(), held);
         let cleared = EventKind::TaskReasonChanged {
-            resource: Some(dvb_core::event::ResourceWait::Available),
+            resource: Some(if vendor_hold {
+                dvb_core::event::ResourceWait::UsageLimit
+            } else {
+                dvb_core::event::ResourceWait::Available
+            }),
             task: TaskId::new(TASK),
             run: RunId::new("memory-vendor"),
-            reason: None,
+            reason: held.map(Into::into),
         };
         assert!(
             e.store
@@ -1291,10 +1297,15 @@ async fn recovered_memory_clears_resource_status_while_admission_still_holds_the
                 .any(|ev| ev.kind == cleared),
             "cleared reason must invalidate live task snapshots through a task event"
         );
-        assert!(matches!(
-            feed.next().await,
-            Some(dvb_engine::feed::FeedItem::Event(ev)) if ev.kind == cleared
-        ));
+        let changed = loop {
+            let Some(dvb_engine::feed::FeedItem::Event(ev)) = feed.next().await else {
+                panic!("the feed ended");
+            };
+            if matches!(ev.kind, EventKind::TaskReasonChanged { .. }) {
+                break ev.kind;
+            }
+        };
+        assert_eq!(changed, cleared);
         assert!(!dvb_cli::task_line(&view).contains("Waiting for memory"));
         assert_eq!(view.state, TaskState::Preparing);
         assert_eq!(e.vendors.is_limited(Vendor::Fake), vendor_hold);
@@ -1430,14 +1441,15 @@ async fn load_holds_task_launches_and_refreshes_resource_status() {
             matches!(feed.next().await, Some(dvb_engine::feed::FeedItem::Event(ev))
             if matches!(ev.kind, EventKind::TaskReasonChanged { reason: Some(ref reason), .. } if reason == "Waiting for host load"))
         );
-        // Resources recover while the vendor still holds admission: clear status.
+        // Resources recover while the vendor still holds admission: the
+        // status says the run now waits for the vendor.
         limit(&e, 600_000);
         *stub.readings.load.lock().unwrap() = Some((4.0, 4));
         tokio::time::advance(Duration::from_secs(30)).await;
         tokio::task::yield_now().await;
         assert_eq!(
             e.proj().tasks[&TaskId::new(TASK)].view.reason.as_deref(),
-            review.then_some("code review")
+            Some("Waiting for a usage limit")
         );
         assert_eq!(stub.starts.load(Ordering::SeqCst), 1);
         tokio::time::advance(Duration::from_secs(600)).await;

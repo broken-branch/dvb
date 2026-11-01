@@ -562,9 +562,12 @@ own effort or its nearest supported effort.
 Selection happens at launch. Queued runs follow the current restriction, while
 running assignments stay fixed. Hires and settings are not edited.
 
-A limited vendor waits; usage fallback stays within the listed models. Task and
-feed evidence show hired and actual models, including same-vendor switched or
-fallback reviews. The restriction survives restart. Expiry returns new runs to
+A limited vendor waits; usage fallback stays within the listed models. A run
+waiting for a usage limit shows `Waiting for a usage limit` as its task's
+`reason`, with the reset time in its notice. A vendor pause survives an engine
+restart until its reset time; `dvb usage` and the cockpit show it as a full
+`usage` window with that reset. Task and feed evidence show hired and actual
+models, including same-vendor switched or fallback reviews. The restriction survives restart. Expiry returns new runs to
 their hires, including after downtime. Global and project status show an active
 restriction and its local end time.
 

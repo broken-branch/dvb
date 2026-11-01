@@ -261,6 +261,7 @@
   "resource.memory": "Waiting for memory",
   "resource.disk": "Waiting for disk",
   "resource.host_load": "Waiting for host load",
+  "resource.usage_limit": "Waiting for a usage limit",
   "resource.available": "Resources available; starting run.",
   "resource.notice": "{resource}: {detail}",
   "reason.review.code": "code review",

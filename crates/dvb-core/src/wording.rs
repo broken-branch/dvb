@@ -91,6 +91,7 @@ pub fn resource_words(resource: crate::event::ResourceWait) -> &'static str {
         ResourceWait::Memory => "resource.memory",
         ResourceWait::Disk => "resource.disk",
         ResourceWait::HostLoad => "resource.host_load",
+        ResourceWait::UsageLimit => "resource.usage_limit",
         ResourceWait::Available => "resource.available",
     })
 }

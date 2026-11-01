@@ -3,9 +3,10 @@
 //! A run's driver reports the vendor's window (`/run/ratelimit`). A window at 100
 //! percent is a limit: `vendor.limited` is recorded, new runs of that vendor wait
 //! in `launch`, and `vendor.resumed` is recorded at the reset time the vendor
-//! gave, or after `RETRY_EVERY` when it gave none. A paused run waits for its own
-//! vendor unless it moves at launch (`dispatch::decide_launch`, waited
-//! for in `dispatch::wait_launch`): under the timed model switch it waits only
+//! gave, or after `RETRY_EVERY` when it gave none. A pause in the log outlives an
+//! engine restart (`restore`). A paused run waits for its own vendor unless it
+//! moves at launch (`dispatch::decide_launch`, waited for in
+//! `dispatch::wait_launch`): under the timed model switch it waits only
 //! for its switched model's vendor; otherwise, with `vendor_fallback` on, a task
 //! run of a limited vendor moves to the orchestrator's vendor.
 
@@ -179,7 +180,8 @@ async fn resume_when(
 }
 
 /// At engine start: a vendor the log says is still limited stays paused until its
-/// reset time.
+/// reset time, and shows in the windows as a full one. The log keeps no window
+/// name, so the restored window is named `usage`.
 pub fn restore(e: &AppState) -> Result<(), Fail> {
     let mut last: HashMap<Vendor, Option<Timestamp>> = HashMap::new();
     for ev in e.store.select(
@@ -196,6 +198,13 @@ pub fn restore(e: &AppState) -> Result<(), Fail> {
         // The last `vendor.limited` is the effective end: it is only written when
         // the end moves.
         if let Some((end, gen_)) = e.vendors.limit(vendor, resets_at) {
+            e.vendors.set_window(VendorWindow {
+                vendor,
+                used_pct: LIMIT_PCT,
+                window: "usage".into(),
+                resets_at: end,
+                limited: true,
+            });
             spawn("resume vendor", resume_when(e.clone(), vendor, end, gen_));
         }
     }

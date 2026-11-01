@@ -2,6 +2,7 @@
 //! time the vendor gave; the other vendor is untouched.
 
 mod support;
+use dvb_core::api::VendorWindow;
 use dvb_core::run_verbs::RateLimitBody;
 use dvb_core::{EventKind, Timestamp, Vendor};
 use dvb_engine::{AppState, vendors};
@@ -108,12 +109,25 @@ async fn a_limit_in_the_log_is_still_in_force_after_a_restart() {
     };
     let e = support::engine::open(dir.path());
     assert!(!e.vendors.is_limited(Vendor::Codex));
+    assert!(e.vendors.windows().is_empty());
     vendors::restore(&e).unwrap();
     assert!(e.vendors.is_limited(Vendor::Codex));
+    // The usage view shows the restored pause and its reset.
+    assert_eq!(
+        e.vendors.windows(),
+        vec![VendorWindow {
+            vendor: Vendor::Codex,
+            used_pct: 100.0,
+            window: "usage".into(),
+            resets_at: Some(reset),
+            limited: true,
+        }]
+    );
     timeout(Duration::from_secs(5), e.vendors.wait_open(Vendor::Codex))
         .await
         .unwrap();
     assert!(e.clock.now() >= reset);
+    assert!(!e.vendors.windows()[0].limited);
 }
 
 #[tokio::test]
@@ -173,6 +187,7 @@ async fn a_restart_restores_the_latest_deadline_not_the_first() {
     };
     let e = support::engine::open(dir.path());
     vendors::restore(&e).unwrap();
+    assert_eq!(e.vendors.windows()[0].resets_at, Some(later));
     assert!(
         timeout(
             Duration::from_millis(1000),

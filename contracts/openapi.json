@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.1.82"
+    "version": "0.1.83"
   },
   "paths": {
     "/events": {
@@ -9989,6 +9989,7 @@
           "memory",
           "disk",
           "host_load",
+          "usage_limit",
           "available"
         ]
       },

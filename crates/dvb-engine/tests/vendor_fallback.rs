@@ -5,6 +5,7 @@
 //! fallback run keeps its assignment.
 
 mod support;
+use dvb_core::event::{OutputItem, ResourceWait};
 use dvb_core::launcher::{Launcher, UnitId, UnitState};
 use dvb_core::roles::{HireRecord, HireStatus};
 use dvb_core::run_verbs::RateLimitBody;
@@ -32,19 +33,15 @@ fn engine(dir: &Path, stub: &Arc<Stub>, fallback: bool) -> AppState {
     engine_with_clock(dir, stub, fallback, Arc::new(SystemClock))
 }
 
-fn engine_with_clock(
-    dir: &Path,
-    stub: &Arc<Stub>,
-    fallback: bool,
-    clock: Arc<dyn Clock>,
-) -> AppState {
+/// The engine on `dir` as it was left, with the Codex model in the pool.
+fn open(dir: &Path, stub: &Arc<Stub>, clock: Arc<dyn Clock>) -> AppState {
     let mut pool = support::engine::fake_pool();
     pool.models.push(PoolModel {
         id: "codex-x".into(),
         vendor: Vendor::Codex,
         efforts: vec![Effort::Low, Effort::High],
     });
-    let e = support::engine::open_with(
+    support::engine::open_with(
         dir,
         "dvb",
         dvb_engine::EngineOptions {
@@ -54,7 +51,16 @@ fn engine_with_clock(
             disk_reading: Some(Arc::new(|| Some(u64::MAX))),
             ..Default::default()
         },
-    );
+    )
+}
+
+fn engine_with_clock(
+    dir: &Path,
+    stub: &Arc<Stub>,
+    fallback: bool,
+    clock: Arc<dyn Clock>,
+) -> AppState {
+    let e = open(dir, stub, clock);
     let (roles, hires) = support::events::default_role_hire_events();
     let mut kinds = support::events::approved_task_events();
     kinds[0] = support::events::project_event(
@@ -422,8 +428,28 @@ async fn a_limited_vendors_run_moves_to_the_orchestrators_vendor() {
     drop(proj);
 }
 
+/// The engine's usage-limit notices for run `b1`.
+fn usage_limit_notices(e: &AppState) -> Vec<String> {
+    support::events::all(e)
+        .into_iter()
+        .filter_map(|ev| {
+            if let EventKind::RunOutput {
+                resource: Some(ResourceWait::UsageLimit),
+                run,
+                item: OutputItem::Note(text),
+            } = ev.kind
+                && run == RunId::new("b1")
+            {
+                Some(text)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn with_the_switch_off_the_run_waits_for_its_own_vendor() {
+async fn with_the_switch_off_the_run_waits_for_its_own_vendor_and_says_why_once() {
     let dir = tempfile::tempdir().unwrap();
     let stub = Arc::new(Stub {
         stop_changes_state: false,
@@ -434,9 +460,77 @@ async fn with_the_switch_off_the_run_waits_for_its_own_vendor() {
     dispatch::start_task(&e, builder(), Actor::Engine)
         .await
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    wait.until("the wait to be recorded", || {
+        !usage_limit_notices(&e).is_empty()
+    })
+    .await;
+    let notices = usage_limit_notices(&e);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(
+        notices[0].starts_with("codex usage limit; resets at "),
+        "{notices:?}"
+    );
+    assert_eq!(
+        e.proj().tasks[&TaskId::new("t")].view.reason.as_deref(),
+        Some("Waiting for a usage limit")
+    );
     assert_eq!(stub.starts.load(Ordering::SeqCst), 0);
+    assert_eq!(state(&e), TaskState::Preparing);
     assert!(reroutes(&e).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_pause_restored_at_start_holds_its_run_says_why_once_and_ends_at_its_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    let stub = Arc::new(Stub {
+        stop_changes_state: false,
+        ..Default::default()
+    });
+    let reset = {
+        // Before the restart, Codex reported its window full for a few seconds.
+        let before = engine(dir.path(), &stub, false);
+        limit_for(&before, Vendor::Codex, 4_000);
+        before.vendors.resets_at(Vendor::Codex).unwrap()
+    };
+    let e = open(dir.path(), &stub, Arc::new(SystemClock));
+    // What the engine does at start, before it serves.
+    vendors::restore(&e).unwrap();
+    assert!(e.vendors.is_limited(Vendor::Codex));
+    let windows = e.vendors.windows();
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0].vendor, Vendor::Codex);
+    assert_eq!(windows[0].resets_at, Some(reset));
+    assert!(windows[0].limited);
+    dispatch::start_task(&e, builder(), Actor::Engine)
+        .await
+        .unwrap();
+    wait.until("the wait to be recorded", || {
+        !usage_limit_notices(&e).is_empty()
+    })
+    .await;
+    let notices = usage_limit_notices(&e);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(
+        notices[0].starts_with("codex usage limit; resets at "),
+        "{notices:?}"
+    );
+    assert_eq!(
+        e.proj().tasks[&TaskId::new("t")].view.reason.as_deref(),
+        Some("Waiting for a usage limit")
+    );
+    assert_eq!(stub.starts.load(Ordering::SeqCst), 0);
+    wait.until("the Codex run to launch at the reset", || {
+        stub.starts.load(Ordering::SeqCst) == 1 && state(&e) == TaskState::Running
+    })
+    .await;
+    assert!(e.clock.now() >= reset);
+    assert_eq!(
+        e.proj().runs[&RunId::new("b1")].assignment.vendor,
+        Vendor::Codex
+    );
+    assert!(!e.vendors.windows()[0].limited);
+    assert!(reroutes(&e).is_empty());
+    assert_eq!(usage_limit_notices(&e).len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -514,8 +514,12 @@ describe('updates', () => {
     const packaged = 'dvb came from your package manager; update it with `yay -Syu dvb-bin`.';
     source.replies['/update'] = { current: '0.1.0', packaged };
     mount(<Settings tab="updates" />, source);
-    expect(await screen.findByText(packaged)).toBeInTheDocument();
-    expect(screen.getByRole('status')).toHaveTextContent(packaged);
+    const command = await screen.findByText('yay -Syu dvb-bin');
+    expect(command.tagName).toBe('CODE');
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'dvb came from your package manager; update it with yay -Syu dvb-bin.',
+    );
+    expect(screen.getByRole('status').textContent).not.toContain('`');
     expect(screen.queryByRole('button', { name: 'Update dvb' })).not.toBeInTheDocument();
     expect(screen.queryByText('Up to date')).not.toBeInTheDocument();
   });

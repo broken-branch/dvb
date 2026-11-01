@@ -191,15 +191,17 @@ impl Task {
 
 fn rate_limit_reason(limit: dvb_core::forge::RateLimit) -> String {
     match limit.reset {
-        Some(reset) => format!(
-            "Waiting for GitHub rate limit; reset at {}",
-            chrono::DateTime::from_timestamp_millis(reset.millis()).map_or_else(
-                || reset.millis().to_string(),
-                |time| time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
-            )
-        ),
+        Some(reset) => format!("Waiting for GitHub rate limit; reset at {}", utc(reset)),
         None => "Waiting for GitHub rate limit; reset not supplied".into(),
     }
+}
+
+/// A reset time in engine-written reasons.
+pub(crate) fn utc(t: dvb_core::Timestamp) -> String {
+    chrono::DateTime::from_timestamp_millis(t.millis()).map_or_else(
+        || t.millis().to_string(),
+        |time| time.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+    )
 }
 
 pub(super) fn task_final(state: &TaskState) -> bool {

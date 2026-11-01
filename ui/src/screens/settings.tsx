@@ -243,7 +243,11 @@ function Updates() {
       <div className="actions">
         <div role="status" aria-live="polite" aria-atomic="true">
           {info?.packaged ? (
-            <p>{info.packaged}</p>
+            <p>
+              {info.packaged
+                .split('`')
+                .map((part, i) => (i % 2 ? <code key={i}>{part}</code> : part))}
+            </p>
           ) : failure ? (
             <Status tone="bad">{failure}</Status>
           ) : info ? (

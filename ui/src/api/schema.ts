@@ -2777,7 +2777,7 @@ export interface components {
      * @description A resource admission hold, or its release.
      * @enum {string}
      */
-    ResourceWait: 'memory' | 'disk' | 'host_load' | 'available';
+    ResourceWait: 'memory' | 'disk' | 'host_load' | 'usage_limit' | 'available';
     /** @enum {string} */
     ResponseStyle: 'Simple' | 'Clear' | 'Technical' | 'Expert';
     /**

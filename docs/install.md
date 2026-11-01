@@ -137,19 +137,6 @@ When `/opt/dvb/packaged` exists, the package manager owns dvb: update it with
 `yay -Syu dvb-bin`. `dvb update` and the cockpit refuse to self-update, and
 `dvb update --check` prints that instruction instead of offering a release.
 
-For the AUR package, install and activate it in one line:
-
-```sh
-yay -S dvb-bin && sudo /usr/lib/dvb/dvb-setup
-```
-
-The package supplies the files, users and directories. `dvb-setup` records the
-account that ran sudo as the owner, restricts the desk to that account and enables
-the engine and desk. The desk starts in the owner's current session or at their
-next login. The release tarball carries this same script in `install/`;
-`install.sh` uses it after installing files. Package upgrades supply the units
-and their version stamp too.
-
 `dvb update` replaces only the binary, never the run units. `dvb status` warns
 when the run units are older than the engine: for a script install, re-run the
 current release's `install.sh`; for a packaged install, update the package.

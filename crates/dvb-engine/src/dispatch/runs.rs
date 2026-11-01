@@ -231,10 +231,11 @@ fn overloaded(e: &AppState) -> Option<(f64, usize)> {
 }
 
 /// What to do with a run about to launch: the one decision,
-/// taken before waiting and again under the task's lock.
+/// taken before waiting and again under the task's lock. A wait names the
+/// limited vendor it waits for, or none when the host is short.
 pub(crate) enum Launch {
     Ready(Option<Box<EventKind>>),
-    Wait,
+    Wait(Option<dvb_core::Vendor>),
 }
 
 /// The shared start rule for task runs and taskless orchestrators. Under the
@@ -248,7 +249,7 @@ pub(crate) fn decide_launch(
     now: dvb_core::Timestamp,
 ) -> Result<Launch, Fail> {
     if short_of_disk(e).is_some() || short_of_memory(e).is_some() || overloaded(e).is_some() {
-        return Ok(Launch::Wait);
+        return Ok(Launch::Wait(None));
     }
     if let Some((_, only)) = proj.only.as_ref().filter(|(_, only)| only.ends_at > now) {
         let (model, effort) = dvb_core::model::only_model(&a.model, a.effort, only, &e.pool)
@@ -259,7 +260,7 @@ pub(crate) fn decide_launch(
             .ok_or_else(|| Fail::internal("switch model missing"))?
             .vendor;
         if e.vendors.is_limited(vendor) {
-            return Ok(Launch::Wait);
+            return Ok(Launch::Wait(Some(vendor)));
         }
         let moved = model != a.model || effort != a.effort;
         return Ok(Launch::Ready(moved.then(|| {
@@ -278,7 +279,7 @@ pub(crate) fn decide_launch(
     }
     if a.task.is_none() {
         return Ok(if e.vendors.is_limited(a.vendor) {
-            Launch::Wait
+            Launch::Wait(Some(a.vendor))
         } else {
             Launch::Ready(None)
         });
@@ -300,8 +301,8 @@ pub(crate) fn decide_launch(
         .as_ref()
         .and_then(|o| e.pool.find(&o.model))
         .map(|m| m.vendor);
-    if orchestrator_vendor.is_some_and(|v| e.vendors.is_limited(v)) {
-        return Ok(Launch::Wait);
+    if let Some(v) = orchestrator_vendor.filter(|v| e.vendors.is_limited(*v)) {
+        return Ok(Launch::Wait(Some(v)));
     }
     if !e.vendors.is_limited(a.vendor) {
         return Ok(Launch::Ready(None));
@@ -314,13 +315,13 @@ pub(crate) fn decide_launch(
         .filter(|_| on)
         .and_then(|o| fallback_model(&role_hires, &o, &pool));
     let Some((to_model, effort)) = target else {
-        return Ok(Launch::Wait);
+        return Ok(Launch::Wait(Some(a.vendor)));
     };
     let Some(vendor) = pool.find(&to_model).map(|m| m.vendor) else {
-        return Ok(Launch::Wait);
+        return Ok(Launch::Wait(Some(a.vendor)));
     };
     if vendor == a.vendor || e.vendors.is_limited(vendor) {
-        return Ok(Launch::Wait);
+        return Ok(Launch::Wait(Some(a.vendor)));
     }
     Ok(Launch::Ready(Some(Box::new(EventKind::RunRerouted {
         run: a.run.clone(),
@@ -392,14 +393,11 @@ pub(crate) async fn wait_launch(
         changed.as_mut().enable();
         freed.as_mut().enable();
         e.expire_only(None)?;
-        if !matches!(
-            decide_launch(e, &e.proj(), project, a, e.clock.now())?,
-            Launch::Wait
-        ) {
+        let Launch::Wait(vendor) = decide_launch(e, &e.proj(), project, a, e.clock.now())? else {
             // Clear before handing off to any remaining admission guard.
             refresh_resource_reason(e, project, a, None)?;
             return Ok(());
-        }
+        };
         let mut waiting = None;
         if let Some(free) = short_of_disk(e) {
             tell_waiting_for_resource(
@@ -435,6 +433,16 @@ pub(crate) async fn wait_launch(
             )?;
             waiting = Some(ResourceWait::HostLoad);
         }
+        if let Some(vendor) = vendor {
+            tell_waiting_for_resource(
+                e,
+                project,
+                a,
+                ResourceWait::UsageLimit,
+                &usage_limit_detail(e, vendor),
+            )?;
+            waiting = Some(ResourceWait::UsageLimit);
+        }
         refresh_resource_reason(e, project, a, waiting)?;
         tokio::select! {
             _ = changes.changed() => {}
@@ -442,6 +450,18 @@ pub(crate) async fn wait_launch(
             () = &mut freed => {}
             () = tokio::time::sleep(RESOURCE_POLL) => {}
         }
+    }
+}
+
+/// The limited vendor and when the vendor said its window resets.
+fn usage_limit_detail(e: &AppState, vendor: dvb_core::Vendor) -> String {
+    match e.vendors.resets_at(vendor) {
+        Some(reset) => format!(
+            "{} usage limit; resets at {}",
+            vendor.as_str(),
+            crate::proj::utc(reset)
+        ),
+        None => format!("{} usage limit; reset not supplied", vendor.as_str()),
     }
 }
 
@@ -495,8 +515,8 @@ fn refresh_resource_reason(
     Ok(())
 }
 
-/// One owner notice per resource/run, including taskless orchestrators and
-/// repeated waits after update admission.
+/// One owner notice and journal line per resource/run, including taskless
+/// orchestrators and repeated waits after update admission.
 fn tell_waiting_for_resource(
     e: &AppState,
     project: &ProjectId,
@@ -504,7 +524,7 @@ fn tell_waiting_for_resource(
     resource: ResourceWait,
     detail: &str,
 ) -> Result<(), Fail> {
-    e.append_checked(Some(project), Actor::Engine, |proj, _now| {
+    let told = e.append_checked(Some(project), Actor::Engine, |proj, _now| {
         Ok(if proj.resource_notice_given(&a.run, resource) {
             vec![]
         } else {
@@ -517,6 +537,13 @@ fn tell_waiting_for_resource(
             kinds
         })
     })?;
+    if !told.is_empty() {
+        eprintln!(
+            "dvb engine: run {}: {}",
+            a.run,
+            dvb_core::wording::resource_notice(resource, detail)
+        );
+    }
     Ok(())
 }
 
@@ -569,15 +596,15 @@ pub(super) async fn launch_later(e: AppState, a: RunAssignment) -> Result<(), Fa
             return e.end_run(&a.run, EndReason::Stopped, None);
         }
         e.expire_only(None)?;
-        let mut launch = Launch::Wait;
+        let mut launch = Launch::Wait(None);
         e.append_checked(Some(&project), Actor::Engine, |proj, now| {
             launch = decide_launch(&e, proj, &project, &a, now)?;
             Ok(match &launch {
                 Launch::Ready(reroute) => launch_events(proj, &a, reroute.clone()),
-                Launch::Wait => vec![],
+                Launch::Wait(_) => vec![],
             })
         })?;
-        if matches!(launch, Launch::Wait) {
+        if matches!(launch, Launch::Wait(_)) {
             continue;
         }
         queue(&e).remove(&a.run);

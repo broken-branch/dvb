@@ -146,3 +146,73 @@ async fn resource_polls_do_not_read_retained_output_and_notices_survive_reentry_
     }
     assert_eq!(e.store.last_id().unwrap(), before);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_run_waiting_for_a_limited_vendor_records_why_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let e = Engine::open(
+        Config::dev(dir.path(), "unused-dvb".into()),
+        crate::test_support::engine::Readings::default().options(crate::EngineOptions {
+            forge: None,
+            launcher: None,
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    let project = ProjectId::new("p");
+    let reset = e.clock.now().plus_millis(600_000);
+    crate::vendors::record(
+        &e,
+        dvb_core::Vendor::Codex,
+        &dvb_core::run_verbs::RateLimitBody {
+            used_pct: 100.0,
+            window: "7d".into(),
+            resets_at: Some(reset),
+        },
+    )
+    .unwrap();
+    let a = crate::test_support::assignment::Assignment::new(RunId::new("sol"))
+        .vendor(dvb_core::Vendor::Codex)
+        .base(Some("base".into()))
+        .build();
+    let notices = || {
+        e.store
+            .after(EventId(0))
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| {
+                if let EventKind::RunOutput {
+                    resource: Some(ResourceWait::UsageLimit),
+                    item: OutputItem::Note(text),
+                    ..
+                } = event.kind
+                {
+                    Some(text)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    let waiter = tokio::spawn({
+        let (e, project, a) = (e.clone(), project.clone(), a.clone());
+        async move { wait_launch(&e, &project, &a).await }
+    });
+    tokio::task::yield_now().await;
+    assert_eq!(
+        notices(),
+        vec![format!(
+            "codex usage limit; resets at {}",
+            crate::proj::utc(reset)
+        )]
+    );
+    for _ in 0..3 {
+        tokio::time::advance(RESOURCE_POLL).await;
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        assert_eq!(notices().len(), 1);
+    }
+    tokio::time::advance(Duration::from_secs(600)).await;
+    waiter.await.unwrap().unwrap();
+    assert_eq!(notices().len(), 1);
+}

@@ -119,6 +119,8 @@ pub enum ResourceWait {
     Memory,
     Disk,
     HostLoad,
+    /// The run's vendor (or the one it would move to) is paused at its usage limit.
+    UsageLimit,
     Available,
 }
 
