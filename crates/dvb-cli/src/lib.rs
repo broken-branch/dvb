@@ -224,6 +224,7 @@ pub enum Verb {
     /// Tokens, estimated cost and each vendor's usage window.
     Usage { project: Option<String> },
     /// Check GitHub for a newer release; without `--check`, install it.
+    /// Packaged installs update through the package manager.
     Update {
         /// Only say whether a newer release exists.
         #[arg(long)]
@@ -1531,7 +1532,9 @@ async fn run(target: &Target, client: &Client, verb: Verb) -> Result<i32, CliErr
                 ))?,
             }
         }
-        Verb::Update { check, to } => update::update_target(target, client, check, to).await?,
+        Verb::Update { check, to } => {
+            return update::update_target(target, client, check, to).await;
+        }
         Verb::Watch {
             after,
             once,

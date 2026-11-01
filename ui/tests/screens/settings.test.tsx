@@ -509,6 +509,16 @@ describe('commit author', () => {
 });
 
 describe('updates', () => {
+  it('leaves packaged updates to the package manager', async () => {
+    const source = createFixtureSource();
+    const packaged = 'dvb came from your package manager; update it with `yay -Syu dvb-bin`.';
+    source.replies['/update'] = { current: '0.1.0', packaged };
+    mount(<Settings tab="updates" />, source);
+    expect(await screen.findByText(packaged)).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(packaged);
+    expect(screen.queryByRole('button', { name: 'Update dvb' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Up to date')).not.toBeInTheDocument();
+  });
   it.each([
     { info: { current: '0.1.0' }, result: 'Up to date' },
     { info: { current: '0.1.0', available: '0.1.1' }, result: 'Available: 0.1.1' },

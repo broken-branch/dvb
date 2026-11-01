@@ -211,6 +211,9 @@ pub async fn start_with(
     exec: Exec,
 ) -> Result<UpdateInfo, Fail> {
     let l = Layout::of(&e.cfg);
+    if l.packaged() {
+        return Err(refused(super::PACKAGED_MESSAGE));
+    }
     let current = dvb_core::VERSION;
     let explicit = body.to.is_some();
     let target = src
@@ -245,6 +248,7 @@ pub async fn start_with(
     Ok(UpdateInfo {
         current: current.to_owned(),
         available: Some(to.clone()),
+        packaged: None,
         updating: Some(status(&e).unwrap_or(UpdateStatus { to, runs_active: 0 })),
         completed: None,
     })

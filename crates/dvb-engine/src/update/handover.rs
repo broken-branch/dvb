@@ -87,6 +87,11 @@ impl Layout {
         self.has_role("cockpit") && !self.has_role("engine")
     }
 
+    /// The package manager owns this install, including `current` and versions.
+    pub fn packaged(&self) -> bool {
+        self.opt.join("packaged").exists()
+    }
+
     pub fn versions(&self) -> PathBuf {
         self.opt.join("versions")
     }

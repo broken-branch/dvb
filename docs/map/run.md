@@ -17,6 +17,8 @@ single executable; installation and scripts package and exercise it.
 - `crates/dvb-run/src/client.rs`, `verb.rs`, `login.rs`: run API and vendor login.
 - `install/install.sh`: prerequisites, users, paths and units; see
   [installation details](../install.md).
+- `install/dvb-setup`: shared owner recording, desk restriction and unit activation;
+  called by the installer and directly after a package install.
 - `install/dvb*.service`, `dvb*.socket`, `dvb-run-.service.d/10-common.conf`,
   `50-dvb.rules`: engine, worker and desk services, socket access and polkit.
 - `scripts/run-e2e.sh`, `run-upgrade.sh`: acceptance and upgrade entry points.

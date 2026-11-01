@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.1.81"
+    "version": "0.1.82"
   },
   "paths": {
     "/events": {
@@ -11140,6 +11140,13 @@
           },
           "current": {
             "type": "string"
+          },
+          "packaged": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Package-manager instructions when self-updates are disabled."
           },
           "updating": {
             "oneOf": [

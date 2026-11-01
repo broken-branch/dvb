@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cockpit installer regression cases; all writes go to a temporary root."""
+"""Installer and owner setup regression cases; all writes go to a temporary root."""
 from pathlib import Path
 import os
 import hashlib
@@ -35,7 +35,7 @@ def prepare(root, tmpfiles):
         'esac',
         '',
     ]))
-    executable(stubs / 'chown', ':\n')
+    executable(stubs / 'chown', 'printf "%s\\n" "$*" >> "$DVB_TEST_ROOT/chown.log"\n')
     executable(stubs / 'systemd-tmpfiles',
                'printf "%s\\n" "$*" >> "$DVB_TEST_TMPFILES_LOG"\n'
                'exec "$DVB_TEST_TMPFILES" --root="$DVB_TEST_ROOT" "$@"\n')
@@ -63,9 +63,11 @@ def prepare(root, tmpfiles):
              '/etc/systemd/system', '/etc/polkit-1/rules.d', '/var/lib', '/proc/meminfo', '/usr/local/bin/sccache',
              '/usr/share/applications', '/usr/share/icons', '/etc/tmpfiles.d', '/usr/local/bin/claude',
              '/usr/lib/polkit-1/polkitd', '/usr/libexec/polkitd']
-    text = (source / 'install.sh').read_text()
-    for path in paths:
-        text = text.replace(path, str(root / path.lstrip('/')))
+    for name in ('dvb-setup', 'install.sh'):
+        text = (source / name).read_text()
+        for path in paths:
+            text = text.replace(path, str(root / path.lstrip('/')))
+        (root / name).write_text(text)
     # Runs find none of the host's programs, so every runtime want is asked of pacman.
     runs_path = 'runs_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
     assert runs_path in text
@@ -209,6 +211,7 @@ def check_release_layout(root, script, binary, env):
     (top / 'dvb-0.1.1/dvb').chmod(0o755)
     for file in ('dvb-desk.service', 'dvb.desktop'):
         shutil.copyfile(source / file, top / 'dvb-0.1.1/install' / file)
+    shutil.copyfile(root / 'dvb-setup', top / 'dvb-0.1.1/install/dvb-setup')
     shutil.copytree(source / 'icons', top / 'dvb-0.1.1/install/icons')
     release = ['sh', str(top / 'install.sh'), '--binary', str(top / 'dvb-0.1.1/dvb'), '--owner', 'desktop']
     result = subprocess.run(release + ['--cockpit'], env=env, capture_output=True, text=True, timeout=INSTALL_TIMEOUT)
@@ -231,6 +234,14 @@ def check_release_layout(root, script, binary, env):
     assert result.returncode != 0 and 'dvb.service' in result.stderr, result
     assert not (root / 'opt/dvb').exists()
     assert not (root / 'opt/dvb/role-engine').exists()
+    helper = top / 'dvb-0.1.1/install/dvb-setup'
+    helper.unlink()
+    result = subprocess.run(release + ['--cockpit'], env=env, capture_output=True,
+                            text=True, timeout=INSTALL_TIMEOUT)
+    cases += 1
+    assert result.returncode != 0 and 'missing ' + str(helper) in result.stderr, result
+    assert not (root / 'opt/dvb').exists()
+    shutil.copyfile(root / 'dvb-setup', helper)
     return release, cases
 
 
@@ -434,7 +445,7 @@ def check_engine_paths(tmpfiles):
             args, env, script, _, text = prepare(root, tmpfiles)
             stubs = root / 'stubs'
             for file in source.glob('dvb*'):
-                if file.is_file():
+                if file.is_file() and file.name != 'dvb-setup':
                     shutil.copyfile(file, root / file.name)
             shutil.copytree(source / 'dvb-run-.service.d', root / 'dvb-run-.service.d')
             shutil.copyfile(source / '50-dvb.rules', root / '50-dvb.rules')
@@ -505,6 +516,112 @@ def check_engine_paths(tmpfiles):
     return cases
 
 
+def check_packaged_setup(tmpfiles):
+    cases = 0
+    with tempfile.TemporaryDirectory(prefix='dvb-packaged-setup-') as temp:
+        root = Path(temp)
+        _, env, _, _, _ = prepare(root, tmpfiles)
+        opt = root / 'opt/dvb'
+        opt.mkdir(parents=True)
+        for name in ('packaged', 'role-engine', 'role-cockpit'):
+            (opt / name).touch()
+        (opt / 'versions/0.1.1').mkdir(parents=True)
+        shutil.copyfile(root / 'dvb', opt / 'versions/0.1.1/dvb')
+        (opt / 'current').symlink_to('versions/0.1.1')
+        # pacman and its hooks have already supplied the files, users and folders.
+        data = root / 'var/lib/dvb/state'
+        data.mkdir(parents=True)
+        (data / 'units-version').write_text('2')
+        vendor = root / 'usr/lib/systemd'
+        (vendor / 'system').mkdir(parents=True)
+        (vendor / 'user').mkdir()
+        for name in ('dvb.service', 'dvb.socket', 'dvb-run.socket'):
+            shutil.copyfile(source / name, vendor / 'system' / name)
+        shutil.copyfile(source / 'dvb-desk.service', vendor / 'user/dvb-desk.service')
+        (vendor / 'system/dvb.slice').write_text('[Slice]\nMemoryMax=50%\nMemoryHigh=44%\n')
+        script = root / 'usr/lib/dvb/dvb-setup'
+        script.parent.mkdir()
+        shutil.copyfile(root / 'dvb-setup', script)
+        script.chmod(0o755)
+        executable(root / 'stubs/id', '\n'.join([
+            'case "$*" in',
+            '  -u) echo "${DVB_TEST_UID:-0}" ;;',
+            '  desktop) : ;;',
+            '  "-u desktop") echo 4242 ;;',
+            '  *) exit 1 ;;',
+            'esac',
+        ]))
+        # Check the real write order before an enable/start can reach the engine.
+        executable(root / 'stubs/systemctl',
+                   'printf "%s\\n" "$*" >> "$DVB_TEST_SYSTEMCTL_LOG"\n'
+                   'case "$*" in\n'
+                   '  stop*) ;;\n'
+                   '  --user*) [ "${DVB_TEST_SESSION:-1}" = 1 ] ;;\n'
+                   '  *) [ "$(cat "$DVB_TEST_ROOT/var/lib/dvb/state/owner")" = 4242 ] ;;\n'
+                   'esac\n')
+        real_install = shutil.which('install')
+        install = root / 'stubs/install'
+        install.write_text(f'#!{sys.executable} -I\nimport os, sys\n'
+                           'args = iter(sys.argv[1:]); kept = []\n'
+                           'for arg in args:\n'
+                           '    if arg in ("-o", "-g"): next(args)\n'
+                           '    else: kept.append(arg)\n'
+                           f'os.execv({real_install!r}, ["install", *kept])\n')
+        install.chmod(0o755)
+
+        def snapshot(*trees):
+            return {str(p): (p.readlink() if p.is_symlink() else p.read_bytes() if p.is_file() else None,
+                             p.lstat().st_mode, p.lstat().st_mtime_ns)
+                    for tree in trees for p in tree.rglob('*')}
+
+        package_files = snapshot(opt, root / 'usr')
+        setup = [str(script)]
+        for options, extra in (([], dict(SUDO_USER='desktop')),
+                               (['--owner', 'desktop'], dict(SUDO_USER='', DVB_TEST_SESSION='0'))):
+            result = subprocess.run(setup + options, env=dict(env, **extra), capture_output=True,
+                                    text=True, timeout=INSTALL_TIMEOUT)
+            cases += 1
+            assert result.returncode == 0, result.stderr
+            owner = data / 'owner'
+            assert owner.read_text() == '4242\n'
+            assert stat.S_IMODE(owner.stat().st_mode) == 0o600
+            drop_in = root / 'etc/systemd/user/dvb-desk.service.d/10-owner.conf'
+            assert drop_in.read_text() == '[Unit]\nConditionUser=desktop\n'
+            assert stat.S_IMODE(drop_in.stat().st_mode) == 0o644
+            assert 'dvb:dvb ' + str(owner) in (root / 'chown.log').read_text().splitlines()
+            calls = (root / 'systemctl.log').read_text().splitlines()
+            if (data / 'dvb.sqlite').exists():
+                assert calls.pop(0) == 'stop dvb.service'
+            assert calls[:4] == ['daemon-reload', 'enable dvb.service',
+                                 'enable --now dvb.socket dvb-run.socket', 'restart dvb.service']
+            assert '--global enable dvb-desk.service' in calls
+            if extra.get('DVB_TEST_SESSION') == '0':
+                assert 'next logs in' in result.stdout
+            else:
+                assert '--user -M desktop@ restart dvb-desk.service' in calls
+            assert snapshot(opt, root / 'usr') == package_files
+            assert not (root / 'etc/systemd/system').exists()
+            assert (data / 'units-version').read_text() == '2'
+            # A second setup preserves a stopped engine's database before changing owner.
+            (data / 'dvb.sqlite').write_bytes(b'existing database')
+            (root / 'systemctl.log').unlink()
+            if extra.get('DVB_TEST_SESSION') == '0':
+                backups = list((data / 'backups').glob('pre-install-*.sqlite'))
+                assert len(backups) == 1 and backups[0].read_bytes() == b'existing database'
+                assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+
+        before = snapshot(root)
+        for options, extra in (([], dict(SUDO_USER='')),
+                               (['--owner', 'missing'], dict(SUDO_USER='desktop')),
+                               ([], dict(SUDO_USER='desktop', DVB_TEST_UID='1000'))):
+            result = subprocess.run(setup + options, env=dict(env, **extra),
+                                    capture_output=True, text=True, timeout=INSTALL_TIMEOUT)
+            cases += 1
+            assert result.returncode != 0, result
+            assert snapshot(root) == before
+    return cases
+
+
 def check_release_workflow():
     workflow = (source.parent / '.github/workflows/release.yml').read_text()
     # Top-level job boundaries keep the key's environment and event guard in
@@ -553,6 +670,7 @@ def main():
         cases += check_signing_key(root, script, text, env)
     cases += check_rustup(tmpfiles)
     cases += check_engine_paths(tmpfiles)
+    cases += check_packaged_setup(tmpfiles)
     cases += check_release_workflow()
     print(f'Installer: {cases} cases passed; all writes stayed in the temporary tree.')
 

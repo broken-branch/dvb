@@ -952,6 +952,61 @@ async fn get_update_without_check_never_needs_the_network() {
     assert!(e.update.begin("9.9.9"));
     let (_, body) = get("/update?check=true").await;
     assert_eq!(body["updating"]["to"], "9.9.9");
+
+    // A package takes over even when an earlier check cached an offer.
+    e.update.end();
+    e.update.set_available(Some("9.9.9".into()));
+    let l = Layout::of(&e.cfg);
+    std::fs::create_dir_all(&l.opt).unwrap();
+    std::fs::write(l.opt.join("packaged"), "").unwrap();
+    for uri in ["/update", "/update?check=true"] {
+        let (status, body) = get(uri).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["current"], dvb_core::VERSION);
+        assert!(body["available"].is_null());
+        assert!(body["updating"].is_null());
+        assert_eq!(
+            body["packaged"],
+            "dvb came from your package manager; update it with `yay -Syu dvb-bin`."
+        );
+    }
+    // Without the marker the check is the usual one again.
+    std::fs::remove_file(l.opt.join("packaged")).unwrap();
+    let (status, body) = get("/update?check=true").await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body.get("packaged").is_none());
+}
+
+#[tokio::test]
+async fn packaged_updates_refuse_before_selecting_or_fetching_a_release() {
+    let (dir, e) = engine();
+    let l = Layout::of(&e.cfg);
+    std::fs::create_dir_all(&l.opt).unwrap();
+    std::fs::write(l.opt.join("packaged"), "").unwrap();
+    let src = source(dir.path(), "unused key");
+    let message = "dvb came from your package manager; update it with `yay -Syu dvb-bin`.";
+    for to in [None, Some("99.0.0".into()), Some(dvb_core::VERSION.into())] {
+        let error = protocol::start_with(
+            e.clone(),
+            StartUpdate { to: to.clone() },
+            src.clone(),
+            std::sync::Arc::new(|_| panic!("a packaged update must not exec")),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, Fail::Refused(r) if r.code == RefusalCode::UpdateRefused && r.detail == message)
+        );
+        let error = dvb_engine::update::local::install(&l, &src, to)
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), message);
+    }
+    // Only the marker is under opt: nothing was fetched or installed.
+    assert_eq!(std::fs::read_dir(&l.opt).unwrap().count(), 1);
+    assert!(e.update.target().is_none());
+    assert!(!e.update.quiesced());
+    e.update.admit().await;
 }
 
 #[tokio::test]

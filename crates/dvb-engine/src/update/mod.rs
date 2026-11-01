@@ -18,6 +18,10 @@ use tokio::sync::watch;
 /// The repository releases come from.
 pub const REPO: &str = "broken-branch/dvb";
 
+/// The answer to any self-update on a box whose package manager owns dvb.
+pub const PACKAGED_MESSAGE: &str =
+    "dvb came from your package manager; update it with `yay -Syu dvb-bin`.";
+
 /// Where public releases are listed. Only a private fork's releases need the
 /// owner's token (`github_token`).
 pub fn releases_url() -> String {

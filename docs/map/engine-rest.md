@@ -40,6 +40,8 @@ Paths below are under `crates/dvb-engine/src/`.
 - `units.rs`: systemd D-Bus unit control and the dev process launcher.
 - `update/`: signed downloads, bounded drain/handover, update-stop recovery receipts,
   backups, rollback and local updates. Dispatch resumes marked update stops once.
+  `handover::Layout::packaged` marks a package-manager install: `GET /update` returns
+  `PACKAGED_MESSAGE` in `packaged` and self-updates are refused.
 - `bin/openapi.rs`: generates the owner contract from the router.
 
 ## Start reading

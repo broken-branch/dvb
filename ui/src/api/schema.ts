@@ -3146,6 +3146,8 @@ export interface components {
       available?: string | null;
       completed?: components['schemas']['UpdateCompletion'] | null;
       current: string;
+      /** @description Package-manager instructions when self-updates are disabled. */
+      packaged?: string | null;
       updating?: components['schemas']['UpdateStatus'] | null;
     };
     /** @description An update that has started: waiting for runs to finish, then switching. */

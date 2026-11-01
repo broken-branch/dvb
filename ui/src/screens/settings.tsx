@@ -242,7 +242,9 @@ function Updates() {
       <DataError message={check.error && `The update check failed: ${check.error}`} />
       <div className="actions">
         <div role="status" aria-live="polite" aria-atomic="true">
-          {failure ? (
+          {info?.packaged ? (
+            <p>{info.packaged}</p>
+          ) : failure ? (
             <Status tone="bad">{failure}</Status>
           ) : info ? (
             <Status tone={updating ? 'working' : info.available ? 'neutral' : 'good'}>
@@ -256,7 +258,7 @@ function Updates() {
             !check.error && <p>Checking for a newer release…</p>
           )}
         </div>
-        {info && (
+        {info && !info.packaged && (
           <Button
             disabled={action.busy || !canWrite || !!updating || !info.available}
             onClick={() => {

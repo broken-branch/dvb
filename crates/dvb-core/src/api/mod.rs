@@ -805,6 +805,9 @@ pub struct Usage {
 pub struct UpdateInfo {
     pub current: String,
     pub available: Option<String>,
+    /// Package-manager instructions when self-updates are disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packaged: Option<String>,
     /// Present while an update is under way.
     pub updating: Option<UpdateStatus>,
     /// The latest handover's interrupted task runs and their recovery.

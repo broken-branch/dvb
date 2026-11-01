@@ -1,0 +1,103 @@
+#!/bin/sh
+# Records the owner and enables the installed roles. With an AUR package:
+#   yay -S dvb-bin && sudo /usr/lib/dvb/dvb-setup
+# install.sh passes its chosen roles and owner after installing the files.
+set -eu
+
+die() { echo "dvb-setup: $*" >&2; exit 1; }
+
+engine=0 cockpit=0 engine_host="" owner="${SUDO_USER:-}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --engine) engine=1 ;;
+    --cockpit) cockpit=1 ;;
+    --engine-host)
+      engine_host="${2:-}"
+      case "$engine_host" in
+        ''|-*|*[!A-Za-z0-9_.@:-]*) die "--engine-host <ssh-host>: use a host or user@host without spaces or a leading -" ;;
+      esac
+      shift ;;
+    --owner) owner="${2:-}"; shift ;;
+    *) die "unknown option: $1" ;;
+  esac
+  shift
+done
+
+[ "$(id -u)" = 0 ] || die "run as root (sudo)"
+if [ -z "$owner" ] || ! id "$owner" >/dev/null 2>&1; then
+  die "--owner <user>: the account that uses dvb"
+fi
+if [ "$engine" = 0 ] && [ "$cockpit" = 0 ]; then
+  [ ! -f /opt/dvb/role-engine ] || engine=1
+  [ ! -f /opt/dvb/role-cockpit ] || cockpit=1
+fi
+[ "$engine" = 1 ] || [ "$cockpit" = 1 ] || die "no installed dvb roles"
+if [ -n "$engine_host" ]; then
+  [ "$engine" = 0 ] || die "--engine-host cannot be used with --engine"
+  [ "$cockpit" = 1 ] || die "--engine-host requires --cockpit"
+fi
+
+if [ "$engine" = 1 ]; then
+  # Installing over a running install (the way to move to a release that cannot
+  # update itself): stop the engine, keep a copy of its database first.
+  if [ -f /var/lib/dvb/state/dvb.sqlite ]; then
+    systemctl stop dvb.service 2>/dev/null || true
+    install -d -m 0700 -o dvb -g dvb /var/lib/dvb/state/backups
+    install -m 0600 -o dvb -g dvb /var/lib/dvb/state/dvb.sqlite \
+      "/var/lib/dvb/state/backups/pre-install-$(date -u +%Y%m%dT%H%M%SZ).sqlite"
+  fi
+  id -u "$owner" > /var/lib/dvb/state/owner
+  chown dvb:dvb /var/lib/dvb/state/owner
+  chmod 0600 /var/lib/dvb/state/owner
+
+  systemctl daemon-reload
+  systemctl enable dvb.service
+  systemctl enable --now dvb.socket dvb-run.socket
+  systemctl restart dvb.service
+  echo "dvb: engine installed for $owner; the owner API is /run/dvb/engine.sock"
+  # An install over an existing one keeps the identity saved there.
+  if [ ! -f /var/lib/dvb/state/publication.json ]; then
+    echo "dvb: publishing commits as the default dvb <dvb@dvb.invalid>; to change it: dvb settings publication --name <name> --email <email>"
+  fi
+fi
+
+if [ "$cockpit" = 1 ]; then
+  install -d -m 0755 /etc/systemd/user/dvb-desk.service.d
+  # Enabled for every session manager, but it runs in the owner's only: the
+  # engine answers no one else, and another desk would take the owner's port.
+  printf '[Unit]\nConditionUser=%s\n' "$owner" > /etc/systemd/user/dvb-desk.service.d/10-owner.conf
+  chmod 0644 /etc/systemd/user/dvb-desk.service.d/10-owner.conf
+  user_units="dvb-desk.service"
+  if [ -n "$engine_host" ]; then
+    install -d -m 0755 /etc/tmpfiles.d
+    owner_group=$(id -gn "$owner")
+    printf 'd /run/dvb 0755 %s %s -\n' "$owner" "$owner_group" > /etc/tmpfiles.d/dvb-cockpit.conf
+    systemd-tmpfiles --create /etc/tmpfiles.d/dvb-cockpit.conf
+    cat > /etc/systemd/user/dvb-forward.service <<EOF
+[Unit]
+Description=dvb engine socket from $engine_host
+After=network-online.target
+ConditionUser=$owner
+[Service]
+ExecStart=/usr/bin/ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o StreamLocalBindUnlink=yes -L /run/dvb/engine.sock:/run/dvb/engine.sock $engine_host
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=default.target
+EOF
+    chmod 0644 /etc/tmpfiles.d/dvb-cockpit.conf /etc/systemd/user/dvb-forward.service
+    user_units="dvb-forward.service $user_units"
+    echo "dvb: socket forward from $engine_host installed for $owner"
+  fi
+  # shellcheck disable=SC2086
+  systemctl --global enable $user_units
+  if [ -d "$(getent passwd "$owner" | cut -d: -f6)/.config/omarchy/extensions" ]; then echo "dvb: on Omarchy, the desk will add a dvb submenu to your menu once at first start"; fi
+  # Start them in the owner's running session; otherwise its next login does.
+  # shellcheck disable=SC2086
+  if systemctl --user -M "$owner@" daemon-reload 2>/dev/null \
+    && systemctl --user -M "$owner@" restart $user_units 2>/dev/null; then
+    echo "dvb: cockpit installed and started for $owner; open it with: dvb app"
+  else
+    echo "dvb: cockpit installed; it starts when $owner next logs in"
+  fi
+fi

@@ -21,16 +21,24 @@ pub(super) async fn update_target(
     client: &Client,
     check: bool,
     to: Option<String>,
-) -> Result<(), CliError> {
-    use dvb_engine::update::{handover::Layout, local, protocol::Source};
+) -> Result<i32, CliError> {
+    use dvb_engine::update::{PACKAGED_MESSAGE, handover::Layout, local, protocol::Source};
     let dev = target.dev.as_deref();
     let l = dev.map_or_else(Layout::install, |d| Layout {
         opt: d.join("opt"),
         state: d.join("state"),
     });
+    if l.packaged() {
+        if check {
+            write_stdout(format_args!("{PACKAGED_MESSAGE}\n"))?;
+            return Ok(0);
+        }
+        eprintln!("{PACKAGED_MESSAGE}");
+        return Ok(1);
+    }
     let engine_box = !l.cockpit_only() && (l.has_role("engine") || target.sock().exists());
     if engine_box {
-        return update(client, dev.is_some(), check, to).await;
+        return update(client, dev.is_some(), check, to).await.map(|()| 0);
     }
     let src = Source::for_mode(dev.is_some());
     let engine = match client.get::<dvb_core::api::VersionInfo>("/version").await {
@@ -40,7 +48,7 @@ pub(super) async fn update_target(
     };
     let result = match (check, engine) {
         (true, Some(_)) => {
-            return update(client, dev.is_some(), check, to).await;
+            return update(client, dev.is_some(), check, to).await.map(|()| 0);
         }
         (false, Some(engine)) => {
             let ours = env!("CARGO_PKG_VERSION");
@@ -96,7 +104,7 @@ pub(super) async fn update_target(
         }
         Err(why) => return Err(refused(why.to_string())),
     }
-    Ok(())
+    Ok(0)
 }
 
 async fn update(
@@ -107,6 +115,9 @@ async fn update(
 ) -> Result<(), CliError> {
     if check {
         let info: UpdateInfo = client.get("/update?check=true").await?;
+        if let Some(message) = &info.packaged {
+            return write_stdout(format_args!("{message}\n"));
+        }
         match &info.available {
             None => write_stdout(format_args!("dvb {} is the newest release\n", info.current))?,
             Some(v) => write_stdout(format_args!(
@@ -331,6 +342,26 @@ mod tests {
         Target {
             dev: Some(dir.into()),
             sock: Some(dir.join("engine.sock")),
+        }
+    }
+
+    #[tokio::test]
+    async fn packaged_updates_need_neither_an_engine_nor_a_release_source() {
+        for cockpit in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let target = target(dir.path(), cockpit);
+            std::fs::write(dir.path().join("opt/packaged"), "").unwrap();
+            let client = Client::new(target.sock());
+            assert_eq!(
+                update_target(&target, &client, true, None).await.unwrap(),
+                0
+            );
+            for to in [None, Some("99.0.0".into()), Some(dvb_core::VERSION.into())] {
+                assert_eq!(
+                    crate::main(&target, crate::Verb::Update { check: false, to }).await,
+                    1
+                );
+            }
         }
     }
 

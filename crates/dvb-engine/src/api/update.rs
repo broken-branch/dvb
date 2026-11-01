@@ -22,6 +22,17 @@ use dvb_core::api::{StartUpdate, UpdateInfo, UpdateQuery};
     responses(crate::api::ErrorResponses, (status = 200, description = "The running and available versions", body = dvb_core::api::UpdateInfo), (status = 502, description = "Release check failed", body = dvb_core::Refusal))
 )]
 pub async fn get_update(State(e): State<AppState>, Query(q): Query<UpdateQuery>) -> Response {
+    // A package owns the install: no offer, even one an earlier check cached.
+    if update::handover::Layout::of(&e.cfg).packaged() {
+        return Json(UpdateInfo {
+            current: dvb_core::VERSION.into(),
+            available: None,
+            packaged: Some(update::PACKAGED_MESSAGE.into()),
+            updating: None,
+            completed: update::protocol::completion(&e),
+        })
+        .into_response();
+    }
     // While an update is under way, answer from it: no network, and the
     // progress stays readable if the release list is not.
     let updating = update::protocol::status(&e);
@@ -33,6 +44,7 @@ pub async fn get_update(State(e): State<AppState>, Query(q): Query<UpdateQuery>)
                 .as_ref()
                 .map(|u| u.to.clone())
                 .or_else(|| e.update.available()),
+            packaged: None,
             updating,
             completed,
         })
@@ -44,6 +56,7 @@ pub async fn get_update(State(e): State<AppState>, Query(q): Query<UpdateQuery>)
             Json(UpdateInfo {
                 current: dvb_core::VERSION.into(),
                 available,
+                packaged: None,
                 updating: None,
                 completed,
             })

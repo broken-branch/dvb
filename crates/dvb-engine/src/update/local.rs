@@ -21,6 +21,9 @@ pub async fn install(
     src: &Source,
     to: Option<String>,
 ) -> Result<Option<String>, InternalError> {
+    if l.packaged() {
+        return Err(super::PACKAGED_MESSAGE.into());
+    }
     let current = dvb_core::VERSION;
     let Some(target) = src.target(current, to).await? else {
         return Ok(None);

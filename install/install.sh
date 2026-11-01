@@ -266,8 +266,8 @@ version=$("$binary" --version | awk '{print $2}')
 
 # Every file the chosen roles install must exist before anything changes. Beside
 # a --binary from a release tarball, they are in the install/ directory next to it.
-needed=""
-[ "$engine" = 1 ] && needed="dvb.service dvb.socket dvb-run.socket dvb-run-claude@.service dvb-run-codex@.service dvb-run-fake@.service dvb-run-.service.d/10-common.conf 50-dvb.rules"
+needed="dvb-setup"
+[ "$engine" = 1 ] && needed="$needed dvb.service dvb.socket dvb-run.socket dvb-run-claude@.service dvb-run-codex@.service dvb-run-fake@.service dvb-run-.service.d/10-common.conf 50-dvb.rules"
 icon_sizes="16 32 48 64 128 256 512"
 if [ "$cockpit" = 1 ]; then
   needed="$needed dvb-desk.service dvb.desktop icons/dvb.svg"
@@ -339,17 +339,6 @@ if [ "$engine" = 1 ]; then
   # GET /logins can stat the known credential file names; the files stay 0600 dvb-worker.
   install -d -m 0710 -o dvb-worker -g dvb \
     /var/lib/dvb/logins /var/lib/dvb/logins/claude /var/lib/dvb/logins/codex
-  # Installing over a running install (the way to move to a release that cannot
-  # update itself): stop the engine, keep a copy of its database first.
-  if [ -f /var/lib/dvb/state/dvb.sqlite ]; then
-    systemctl stop dvb.service 2>/dev/null || true
-    install -d -m 0700 -o dvb -g dvb /var/lib/dvb/state/backups
-    install -m 0600 -o dvb -g dvb /var/lib/dvb/state/dvb.sqlite \
-      "/var/lib/dvb/state/backups/pre-install-$(date -u +%Y%m%dT%H%M%SZ).sqlite"
-  fi
-  id -u "$owner" > /var/lib/dvb/state/owner
-  chown dvb:dvb /var/lib/dvb/state/owner
-  chmod 0600 /var/lib/dvb/state/owner
 
   # Units and the polkit rule.
   for f in dvb.service dvb.socket dvb-run.socket \
@@ -379,16 +368,6 @@ MemoryHigh=${runs_memory_high_mb}M
 EOF
     chmod 0644 /etc/systemd/system/dvb.slice
   fi
-
-  systemctl daemon-reload
-  systemctl enable dvb.service
-  systemctl enable --now dvb.socket dvb-run.socket
-  systemctl restart dvb.service
-  echo "dvb $version: engine installed for $owner; the owner API is /run/dvb/engine.sock"
-  # An install over an existing one keeps the identity saved there.
-  if [ ! -f /var/lib/dvb/state/publication.json ]; then
-    echo "dvb $version: publishing commits as the default dvb <dvb@dvb.invalid>; to change it: dvb settings publication --name <name> --email <email>"
-  fi
 fi
 
 if [ "$cockpit" = 1 ]; then
@@ -396,10 +375,6 @@ if [ "$cockpit" = 1 ]; then
   [ "$engine" = 1 ] || chown -R "$owner" /opt/dvb
   install -d -m 0755 /etc/systemd/user /etc/systemd/user/dvb-desk.service.d /usr/share/applications
   install -m 0644 "$here/dvb-desk.service" /etc/systemd/user/dvb-desk.service
-  # Enabled for every session manager, but it runs in the owner's only: the
-  # engine answers no one else, and another desk would take the owner's port.
-  printf '[Unit]\nConditionUser=%s\n' "$owner" > /etc/systemd/user/dvb-desk.service.d/10-owner.conf
-  chmod 0644 /etc/systemd/user/dvb-desk.service.d/10-owner.conf
   install -m 0644 "$here/dvb.desktop" /usr/share/applications/dvb.desktop
   # The desktop entry's Icon=dvb. The desk keeps the owner's own copy current
   # after updates, which do not run this script.
@@ -411,40 +386,13 @@ if [ "$cockpit" = 1 ]; then
     gtk-update-icon-cache -f -t /usr/share/icons/hicolor \
       || warn "gtk-update-icon-cache failed; launchers may show dvb's icon only after their next cache update"
   fi
-  user_units="dvb-desk.service"
-  if [ -n "$engine_host" ]; then
-    install -d -m 0755 /etc/tmpfiles.d
-    owner_group=$(id -gn "$owner")
-    printf 'd /run/dvb 0755 %s %s -\n' "$owner" "$owner_group" > /etc/tmpfiles.d/dvb-cockpit.conf
-    systemd-tmpfiles --create /etc/tmpfiles.d/dvb-cockpit.conf
-    cat > /etc/systemd/user/dvb-forward.service <<EOF
-[Unit]
-Description=dvb engine socket from $engine_host
-After=network-online.target
-ConditionUser=$owner
-[Service]
-ExecStart=/usr/bin/ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o StreamLocalBindUnlink=yes -L /run/dvb/engine.sock:/run/dvb/engine.sock $engine_host
-Restart=always
-RestartSec=5
-[Install]
-WantedBy=default.target
-EOF
-    chmod 0644 /etc/tmpfiles.d/dvb-cockpit.conf /etc/systemd/user/dvb-forward.service
-    user_units="dvb-forward.service $user_units"
-    echo "dvb $version: socket forward from $engine_host installed for $owner"
-  fi
-  # shellcheck disable=SC2086
-  systemctl --global enable $user_units
-  if [ -d "$(getent passwd "$owner" | cut -d: -f6)/.config/omarchy/extensions" ]; then echo "dvb: on Omarchy, the desk will add a dvb submenu to your menu once at first start"; fi
-  # Start them in the owner's running session; otherwise its next login does.
-  # shellcheck disable=SC2086
-  if systemctl --user -M "$owner@" daemon-reload 2>/dev/null \
-    && systemctl --user -M "$owner@" restart $user_units 2>/dev/null; then
-    echo "dvb $version: cockpit installed and started for $owner; open it with: dvb app"
-  else
-    echo "dvb $version: cockpit installed; it starts when $owner next logs in"
-  fi
 fi
+
+set -- --owner "$owner"
+[ "$engine" = 0 ] || set -- "$@" --engine
+[ "$cockpit" = 0 ] || set -- "$@" --cockpit
+[ -z "$engine_host" ] || set -- "$@" --engine-host "$engine_host"
+sh "$here/dvb-setup" "$@"
 
 if command -v omarchy >/dev/null 2>&1; then
   echo "Omarchy bar widget: omarchy plugin add https://github.com/broken-branch/omarchy-dvb --enable"
