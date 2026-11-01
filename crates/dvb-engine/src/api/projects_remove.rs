@@ -42,6 +42,9 @@ pub async fn remove_project(
     if let Some(refusal) = refusal {
         return Err(e.refuse(Some(&id), Actor::Owner, "project.remove", refusal));
     }
+    // Wait for this path before taking the global mirror lock, so a slow
+    // planning fetch cannot block changes to unrelated projects.
+    let cleanup = e.lock_mirror(&e.mirror(&project.name)).await;
     // The mirror job running now finishes before the receipts go.
     let mirror = crate::publish::mirror::lock_for_change(&e, &id, "project.remove").await?;
     let mut runs = Vec::new();
@@ -71,7 +74,8 @@ pub async fn remove_project(
             repo: project.repo.clone(),
         }])
     })?;
-    // After the append no pass sees the project, so its files are freed unlocked.
+    // The projection lock is free during cleanup; the path lock still excludes
+    // an add that was already cloning when this project was removed.
     let mut not_freed = Vec::new();
     if let Some(forge) = e.forge()
         && let Err(err) = forge.forget_mirror(&Repo(project.repo.clone()))
@@ -89,13 +93,17 @@ pub async fn remove_project(
     // (`dvb_run::share_run`), so the engine need not own them; `remove_dir_all`
     // removes a link a run left, never what it points to.
     let dirs = tokio::task::spawn_blocking(move || {
-        dirs.iter()
+        let not_freed = dirs
+            .iter()
             .filter_map(|dir| match std::fs::remove_dir_all(dir) {
                 Ok(()) => None,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
                 Err(err) => Some(format!("{}: {err}", dir.display())),
             })
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        // Blocking cleanup continues even if the request is cancelled.
+        drop(cleanup);
+        not_freed
     })
     .await
     .map_err(Fail::internal)?;

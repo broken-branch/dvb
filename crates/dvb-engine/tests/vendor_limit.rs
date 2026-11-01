@@ -2,10 +2,14 @@
 //! time the vendor gave; the other vendor is untouched.
 
 mod support;
+use axum::http::Method;
 use dvb_core::api::VendorWindow;
-use dvb_core::run_verbs::RateLimitBody;
+use dvb_core::run_verbs::{RateLimitBody, UsageReading};
 use dvb_core::{EventKind, Timestamp, Vendor};
-use dvb_engine::{AppState, vendors};
+use dvb_engine::{AppState, EngineOptions, vendors};
+use futures_util::poll;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -23,6 +27,105 @@ fn body(used_pct: f64, resets_at: Option<Timestamp>) -> RateLimitBody {
         used_pct,
         window: "5h".into(),
         resets_at,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn overlapping_usage_checks_serialize_per_vendor_and_recheck_the_pause() {
+    for first_pct in [100.0, 12.0] {
+        let dir = tempfile::tempdir().unwrap();
+        let launcher = Arc::new(support::launcher::FakeLauncher::default());
+        let e = support::engine::open_with(
+            dir.path(),
+            "unused",
+            EngineOptions {
+                launcher: Some(launcher.clone()),
+                ..Default::default()
+            },
+        );
+        let reset = Some(e.clock.now().plus_millis(3_600_000));
+        for vendor in [Vendor::Fake, Vendor::Codex] {
+            vendors::record(&e, vendor, &body(100.0, reset)).unwrap();
+        }
+        let write = |index: usize, used_pct| {
+            let unit = launcher.units.lock().unwrap()[index].clone();
+            let path = e
+                .cfg
+                .paths
+                .work
+                .join(unit.run.as_str())
+                .join("reading.json");
+            dvb_core::io::write_handoff(
+                &path,
+                &serde_json::to_string(&UsageReading::Read(body(used_pct, reset))).unwrap(),
+            )
+            .unwrap();
+        };
+        let mut first = Box::pin(support::http::call(
+            &e,
+            Method::POST,
+            "/usage/fake/check",
+            None,
+        ));
+        assert!(poll!(&mut first).is_pending());
+        let mut waiting = Box::pin(support::http::call(
+            &e,
+            Method::POST,
+            "/usage/fake/check",
+            None,
+        ));
+        assert!(poll!(&mut waiting).is_pending());
+        assert_eq!(
+            launcher.starts.load(Ordering::SeqCst),
+            1,
+            "same-vendor readings overlap"
+        );
+
+        // A different vendor can finish while the first reading is still pending.
+        let mut other = Box::pin(support::http::call(
+            &e,
+            Method::POST,
+            "/usage/codex/check",
+            None,
+        ));
+        assert!(poll!(&mut other).is_pending());
+        assert_eq!(launcher.starts.load(Ordering::SeqCst), 2);
+        write(1, 12.0);
+        let (status, reply) = other.await;
+        assert!(status.is_success(), "{reply}");
+        assert!(!e.vendors.is_limited(Vendor::Codex));
+        assert!(e.vendors.is_limited(Vendor::Fake));
+
+        write(0, first_pct);
+        let (status, reply) = first.await;
+        assert!(status.is_success(), "{reply}");
+        if first_pct >= 100.0 {
+            assert!(e.vendors.is_limited(Vendor::Fake));
+            assert!(poll!(&mut waiting).is_pending());
+            assert_eq!(launcher.starts.load(Ordering::SeqCst), 3);
+            write(2, 12.0);
+            let (status, reply) = waiting.await;
+            assert!(status.is_success(), "{reply}");
+            assert_eq!(reply["limited"], false);
+        } else {
+            let (status, reply) = waiting.await;
+            assert!(!status.is_success(), "{reply}");
+            assert_eq!(reply["code"], "VENDOR_NOT_LIMITED");
+            assert_eq!(launcher.starts.load(Ordering::SeqCst), 2);
+        }
+        assert!(!e.vendors.is_limited(Vendor::Fake));
+        assert_eq!(
+            kinds(&e)
+                .iter()
+                .filter(|kind| matches!(
+                    kind,
+                    EventKind::VendorResumed {
+                        vendor: Vendor::Fake
+                    }
+                ))
+                .count(),
+            1,
+        );
     }
 }
 

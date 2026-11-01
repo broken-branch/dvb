@@ -837,3 +837,74 @@ async fn adding_after_task_branch_cleanup_still_reports_the_publication_author()
         assert_eq!(e.proj().projects.len(), 2);
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn an_add_already_cloning_must_not_lose_its_mirror_to_a_removal() {
+    use axum::http::Method;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let origin = tmp.path().join("origin");
+    support::git::seed_repository(&origin, "main", None, "Seed");
+    let forge = Arc::new(support::InterruptedForge::new(Arc::new(
+        dvb_forge::FakeForge::local_git(),
+    )));
+    let e = support::engine::open_with(
+        &tmp.path().join("engine"),
+        "unused-dvb",
+        dvb_engine::EngineOptions {
+            forge: Some(forge.clone()),
+            ..Default::default()
+        },
+    );
+    e.manual_dispatch();
+    let body = serde_json::json!({"name":"Project", "repo":origin.to_str().unwrap(), "ci":"no_ci"});
+    let clone_gate = Arc::new(tokio::sync::Barrier::new(2));
+    *forge.clone_barrier.lock().unwrap() = Some(clone_gate.clone());
+    let slow = tokio::spawn({
+        let (e, body) = (e.clone(), body.clone());
+        async move { support::http::call(&e, Method::POST, "/projects", Some(body)).await }
+    });
+    clone_gate.wait().await;
+    let (status, first) =
+        support::http::call(&e, Method::POST, "/projects", Some(body.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+
+    let (removed_tx, removed_rx) = tokio::sync::oneshot::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    *forge.on_forget_mirror.lock().unwrap() = Some(Box::new(move || {
+        removed_tx.send(()).unwrap();
+        resume_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap();
+    }));
+    let removing = tokio::spawn({
+        let e = e.clone();
+        let uri = format!("/projects/{}/remove", first["id"].as_str().unwrap());
+        async move { support::http::call(&e, Method::POST, &uri, None).await }
+    });
+    removed_rx.await.unwrap();
+    assert!(e.proj().projects.is_empty());
+    clone_gate.wait().await;
+    let (add_status, second) = slow.await.unwrap();
+    resume_tx.send(()).unwrap();
+    let (remove_status, removed) = removing.await.unwrap();
+    assert_eq!(remove_status, StatusCode::OK, "{removed}");
+    assert_eq!(removed["not_freed"], serde_json::json!([]));
+    assert!(
+        add_status != StatusCode::CREATED || e.mirror("Project").exists(),
+        "removal deleted a successfully registered project's mirror"
+    );
+    assert_eq!(add_status, StatusCode::CONFLICT, "{second}");
+    assert_eq!(second["code"], "VALUE_CHANGED");
+    assert!(e.proj().projects.is_empty());
+    assert!(!e.mirror("Project").exists());
+
+    let (status, added) = support::http::call(&e, Method::POST, "/projects", Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "{added}");
+    assert_eq!(e.proj().projects.len(), 1);
+    assert_eq!(
+        git(&e.mirror("Project"), &["rev-parse", "HEAD"]),
+        git(&origin, &["rev-parse", "HEAD"]),
+        "the successfully registered project retains a usable mirror"
+    );
+}

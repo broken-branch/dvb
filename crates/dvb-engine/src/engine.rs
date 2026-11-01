@@ -299,6 +299,8 @@ pub struct Engine {
     pub pool: ModelPool,
     /// Vendor windows and the usage-limit pause.
     pub vendors: crate::vendors::Vendors,
+    /// A usage check owns its vendor from pause validation through its reading.
+    pub(crate) usage_checks: KeyedLocks<&'static str>,
     pub(crate) publication: Mutex<crate::publish::PublicationSettings>,
     /// What the update protocol tells the rest of the engine.
     pub update: crate::update::State,
@@ -320,7 +322,7 @@ pub struct Engine {
     pub(crate) starting: tokio::sync::Mutex<()>,
     /// Owner CI choices serialize with check observations and final merge effects.
     project_checks: KeyedLocks<ProjectId>,
-    /// Branch refreshes share refs even when their callers hold different task locks.
+    /// Branch refreshes share refs; add finalization and removal share the path.
     mirror_fetches: KeyedLocks<PathBuf>,
     /// The tasks whose dispatcher is running (`dispatch::kick`).
     pub(crate) dispatching: Mutex<BTreeMap<TaskId, crate::dispatch::Running>>,
@@ -481,6 +483,7 @@ impl Engine {
             forge: Mutex::new(forge),
             pool,
             vendors: crate::vendors::Vendors::default(),
+            usage_checks: KeyedLocks::default(),
             publication: Mutex::new(publication),
             update: crate::update::State::default(),
             github_setup: tokio::sync::Mutex::new(()),
@@ -759,7 +762,8 @@ impl Engine {
         forge.fetch(repo, mirror, branch).await
     }
 
-    /// Planning rechecks eligibility after waiting for the same fetch lock.
+    /// Planning rechecks eligibility after waiting; add and remove hold this
+    /// through registration and filesystem cleanup respectively.
     pub(crate) async fn lock_mirror(&self, mirror: &Path) -> KeyedGuard<PathBuf> {
         self.mirror_fetches.lock(mirror.to_path_buf()).await
     }

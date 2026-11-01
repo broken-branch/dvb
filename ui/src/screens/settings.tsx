@@ -22,7 +22,7 @@ import type { SettingsKey, UpdateInfo } from '@/lib/data/types';
 import { HistoryButton } from '@/components/dvb/history-sheet';
 import { LoginStep } from '@/components/dvb/login-step';
 import { useStore, go } from '@/lib/store';
-import { word } from '@/lib/data/display';
+import { refusalText, word } from '@/lib/data/display';
 import { useEffect, useRef, useState } from 'react';
 function Appearance() {
   const a = useAppearance(),
@@ -212,7 +212,9 @@ function Publication() {
 }
 function Updates() {
   const { data: s, canWrite } = useStore(),
-    action = useAction(),
+    pending = useRef<symbol | undefined>(undefined),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState(''),
     [refresh, setRefresh] = useState(0),
     check = useRead(() => s.updateCheck(), [s.updateCheck, refresh]),
     [started, setStarted] = useState<UpdateInfo>(),
@@ -230,11 +232,39 @@ function Updates() {
       s.connection.state !== 'reconnecting' &&
       (previous.current.state === 'reconnecting' || previous.current.version !== version);
     previous.current = { state: s.connection.state, version };
-    if (returned && info?.updating) {
+    setBusy(false);
+    setError('');
+    if (returned) {
       setStarted(undefined);
       setRefresh((value) => value + 1);
     }
-  }, [s.connection.state, version, info?.updating]);
+    // A reply from the previous connection cannot restore its update progress.
+    return () => {
+      pending.current = undefined;
+    };
+  }, [s.connection.state, version]);
+  async function start() {
+    if (pending.current) return;
+    const request = Symbol();
+    pending.current = request;
+    setBusy(true);
+    setError('');
+    setAfter(s.events.at(-1)?.id ?? 0);
+    try {
+      const result = await s.startUpdate();
+      if (pending.current !== request) return;
+      if (result.ok) setStarted(result.value);
+      else setError(refusalText(result.refusal));
+    } catch (e) {
+      if (pending.current === request)
+        setError(e instanceof Error ? e.message : 'Unable to connect. Try again.');
+    } finally {
+      if (pending.current === request) {
+        pending.current = undefined;
+        setBusy(false);
+      }
+    }
+  }
   return (
     <Card className="settings-panel">
       <h2>Update dvb</h2>
@@ -264,17 +294,14 @@ function Updates() {
         </div>
         {info && !info.packaged && (
           <Button
-            disabled={action.busy || !canWrite || !!updating || !info.available}
-            onClick={() => {
-              setAfter(s.events.at(-1)?.id ?? 0);
-              void action.act(() => s.startUpdate(), setStarted);
-            }}
+            disabled={busy || !canWrite || !!updating || !info.available}
+            onClick={() => void start()}
           >
             Update dvb
           </Button>
         )}
       </div>
-      <DataError message={action.error} />
+      <DataError message={error} />
     </Card>
   );
 }

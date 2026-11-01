@@ -5,9 +5,9 @@ use crate::engine::Fail;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use dvb_core::api::{Usage, UsageQuery, VendorWindow};
-use dvb_core::launcher::UnitId;
+use dvb_core::launcher::{UnitId, UnitState};
 use dvb_core::run_verbs::{RateLimitBody, UsageReading};
-use dvb_core::{EventId, Refusal, RefusalCode, Vendor};
+use dvb_core::{EventId, Refusal, RefusalCode, RunId, Vendor};
 use std::time::Duration;
 
 /// The Fake vendor's reading unless a dev test puts its own at `fake/usage.json`.
@@ -54,6 +54,7 @@ pub async fn check_usage(
     State(e): State<AppState>,
     Path(vendor): Path<Vendor>,
 ) -> Result<Json<VendorWindow>, Fail> {
+    let _check = e.usage_checks.lock(vendor.as_str()).await;
     if !e.vendors.is_limited(vendor) {
         return Err(Refusal::new(
             RefusalCode::VendorNotLimited,
@@ -78,8 +79,22 @@ pub async fn check_usage(
 /// Starts a reading run (`dvb_run::reading`) in the vendor's unit and waits for
 /// the `reading.json` it leaves. Like a login run, it is not recorded as a run.
 async fn take_reading(e: &AppState, vendor: Vendor) -> Result<RateLimitBody, Fail> {
-    let (run, dir) =
-        super::logins::start_unrecorded(e, vendor, "DVB_USAGE_READING", "usage", |dir| {
+    // The unit may be accepted before its start acknowledgement arrives.
+    let mut unit = ReadingUnit {
+        e: e.clone(),
+        unit: UnitId {
+            vendor,
+            run: RunId::new(e.new_id()),
+        },
+        stopping: false,
+    };
+    let dir = super::logins::start_unrecorded(
+        e,
+        vendor,
+        &unit.unit.run,
+        "DVB_USAGE_READING",
+        "usage",
+        |dir| {
             if vendor != Vendor::Fake {
                 return Ok(Vec::new());
             }
@@ -93,13 +108,14 @@ async fn take_reading(e: &AppState, vendor: Vendor) -> Result<RateLimitBody, Fai
                 "DVB_FAKE_SCRIPT",
                 script.to_string_lossy().into_owned(),
             )])
-        })
-        .await?;
-    let Some(text) = super::logins::poll(&dir.join("reading.json"), READING_WAIT).await else {
-        e.launcher()
-            .stop(&UnitId { vendor, run })
-            .await
-            .map_err(|err| Fail::context("stopping the usage reading", err))?;
+        },
+    )
+    .await?;
+    let text = super::logins::poll(&dir.join("reading.json"), READING_WAIT).await;
+    unit.stop()
+        .await
+        .map_err(|err| Fail::context("stopping the usage reading", err))??;
+    let Some(text) = text else {
         return Err(Fail::internal(format!(
             "{} gave no usage reading within {} seconds",
             vendor.as_str(),
@@ -110,6 +126,43 @@ async fn take_reading(e: &AppState, vendor: Vendor) -> Result<RateLimitBody, Fai
         UsageReading::Read(window) => Ok(window),
         UsageReading::Failed(why) => {
             Err(Fail::internal(format!("the usage reading failed: {why}")))
+        }
+    }
+}
+
+struct ReadingUnit {
+    e: AppState,
+    unit: UnitId,
+    stopping: bool,
+}
+
+impl ReadingUnit {
+    fn stop(&mut self) -> tokio::task::JoinHandle<Result<(), Fail>> {
+        self.stopping = true;
+        let e = self.e.clone();
+        let unit = self.unit.clone();
+        // Keep cleanup alive if the request is dropped while awaiting the stop.
+        tokio::spawn(async move {
+            match e.launcher().state(&unit).await {
+                Ok(UnitState::Inactive | UnitState::Failed) => return Ok(()),
+                Ok(UnitState::Active) => {}
+                Err(err) => {
+                    eprintln!("dvb engine: checking usage reading {}: {err}", unit.run);
+                }
+            }
+            e.launcher().stop(&unit).await.map_err(|err| {
+                let err = Fail::context("stopping the usage reading", err);
+                eprintln!("dvb engine: {}: {err}", unit.run);
+                err
+            })
+        })
+    }
+}
+
+impl Drop for ReadingUnit {
+    fn drop(&mut self) {
+        if !self.stopping {
+            drop(self.stop());
         }
     }
 }

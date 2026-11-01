@@ -48,8 +48,8 @@ The installer installs missing prerequisites with pacman. On other distributions
 without pacman, the installer stops before changing anything if a tool it uses is
 missing, and lists those tools for you to install yourself. The CLIs, Chromium
 and toolchain managers are not installed: it names those runs cannot find and carries on with the install.
-Existing system Rust is kept and runs use it. Runs build with the toolchain a
-project pins ([how runs get toolchains](#how-runs-get-toolchains)).
+Without rustup, runs use system Rust and ignore `rust-toolchain.toml`. Install
+rustup to honor a project's pin ([how runs get toolchains](#how-runs-get-toolchains)).
 
 The engine, cockpit and the GitHub App's key stay on your machines.
 
@@ -140,6 +140,9 @@ keeps update stops pending until unpause without reserving a run slot. When the
 engine returns, the output reports whether every task run finished or how many
 were stopped, resumed, or remain pending automatic resume.
 
+On a split install, update the engine first, then run `dvb update` on the desktop
+to match the engine's version.
+
 `dvb update --check` only checks whether a newer release exists.
 `dvb update --to <version>` installs that version (going back needs the same
 database schema).
@@ -160,7 +163,8 @@ Runs use the Claude Code and Codex accounts you log in and their subscription li
 Provider subscriptions or usage can cost money; dvb's token cost display is an
 estimate at API prices, not a bill. GitHub Actions can also consume your plan's
 allowance. dvb creates a private GitHub App owned by your account, a repository
-ruleset, a project board and goal milestones. It pushes task branches, opens pull requests and merges
+ruleset where GitHub permits it, a project board for an organization, and goal
+milestones. It pushes task branches, opens pull requests and merges
 reviewed work after the configured checks pass. It publishes commits as
 `dvb <dvb@dvb.invalid>` unless you [choose another identity](commands.md#settings).
 

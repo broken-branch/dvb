@@ -109,15 +109,16 @@ pub(super) async fn poll(path: &FsPath, limit: Duration) -> Option<String> {
 /// or a usage reading (`api::usage`). `mode` is the variable that selects it in
 /// `dvb-run` and `label` stands for the model; `extra` adds variables for files
 /// it writes in the run directory first. `dispatch::runs` sweeps these
-/// directories by `mode`.
+/// directories by `mode`. The caller chooses `run` so it can own cleanup while
+/// the launch is pending.
 pub(super) async fn start_unrecorded(
     e: &AppState,
     vendor: Vendor,
+    run: &RunId,
     mode: &'static str,
     label: &str,
     extra: impl FnOnce(&FsPath) -> Result<Vec<(&'static str, String)>, Fail>,
-) -> Result<(RunId, PathBuf), Fail> {
-    let run = RunId::new(e.new_id());
+) -> Result<PathBuf, Fail> {
     let dir = e.cfg.paths.work.join(run.as_str());
     let io = |what: &str| {
         let what = what.to_owned();
@@ -141,17 +142,18 @@ pub(super) async fn start_unrecorded(
     env.extend(extra(&dir)?);
     let text: String = env.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
     crate::launch::write_run_file(&dir.join("env"), text).map_err(io("env"))?;
-    e.start_unit(vendor, &run)
+    e.start_unit(vendor, run)
         .await
         .map_err(|err| Fail::context(format!("starting the {label} run"), err))?;
-    Ok((run, dir))
+    Ok(dir)
 }
 
 async fn begin(e: &AppState, vendor: Vendor) -> Result<LoginStarted, Fail> {
     // Serialize replacement and start so two callers cannot leave both running.
     let starting = e.login_starting.lock().await;
     stop_older(e, vendor).await?;
-    let (run, dir) = start_unrecorded(e, vendor, "DVB_LOGIN", "login", |_| Ok(Vec::new())).await?;
+    let run = RunId::new(e.new_id());
+    let dir = start_unrecorded(e, vendor, &run, "DVB_LOGIN", "login", |_| Ok(Vec::new())).await?;
     drop(starting);
 
     let Some(started) = poll(&dir.join("login.json"), URL_WAIT).await else {

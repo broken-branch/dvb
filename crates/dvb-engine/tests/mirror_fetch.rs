@@ -1,12 +1,18 @@
 //! Branch fetch callers share one bare mirror, independently of task locks.
 mod support;
 
+use axum::http::{Method, StatusCode};
 use dvb_core::forge::{Forge, Repo};
+use dvb_core::{Actor, EventKind, GoalId, ProjectId};
+use dvb_engine::{EngineOptions, owner, wake};
 use dvb_forge::FakeForge;
+use futures_util::poll;
 use std::sync::{Arc, atomic::Ordering};
+use std::time::Duration;
 use support::{
     InterruptedForge,
     git::{git, seed_repository},
+    http::call,
 };
 use tokio::sync::Barrier;
 
@@ -135,4 +141,101 @@ async fn a_held_fetch_blocks_only_its_mirror_and_an_error_releases_it() {
             .unwrap(),
         head
     );
+}
+
+#[tokio::test]
+async fn removing_a_project_waiting_for_fetch_does_not_block_another_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let origin = dir.path().join("origin");
+    seed_repository(&origin, "main", None, "seed");
+    let repo = Repo(origin.to_string_lossy().into_owned());
+    let forge = Arc::new(InterruptedForge::new(Arc::new(FakeForge::local_git())));
+    let e = support::engine::open_with(
+        &dir.path().join("engine"),
+        "unused",
+        EngineOptions {
+            forge: Some(forge.clone()),
+            launcher: Some(Arc::new(support::launcher::FakeLauncher::default())),
+            pool: Some(support::engine::fake_pool()),
+            ..Default::default()
+        },
+    );
+    let a = ProjectId::new("a");
+    let b = ProjectId::new("b");
+    for p in [&a, &b] {
+        forge
+            .clone_repo(&repo, &e.mirror(p.as_str()))
+            .await
+            .unwrap();
+        let (roles, hires) = support::events::default_role_hire_events();
+        let mut events = vec![support::events::project_event(p, p.as_str(), &repo.0)];
+        events.extend(roles);
+        events.extend(hires);
+        if p == &a {
+            events.push(support::events::goal_event(
+                &GoalId::new("ga"),
+                "Plan A",
+                None,
+            ));
+        }
+        e.append_checked(Some(p), Actor::Owner, |_, _| Ok(events))
+            .unwrap();
+    }
+    let barrier = Arc::new(Barrier::new(2));
+    *forge.fetch_barrier.lock().unwrap() = Some(barrier.clone());
+    let waking = tokio::spawn(wake::wake(e.clone(), a.clone(), wake::Wake::Goal, 0, 0));
+    barrier.wait().await;
+    owner::pause(&e, &a, true).unwrap();
+    assert!(
+        e.proj().runs.is_empty(),
+        "the planning fetch has not started a run"
+    );
+
+    // A must wait for its fetch without holding the global mirror lock. Paused
+    // time makes an erroneous MIRROR_PASS_RUNNING refusal deterministic.
+    tokio::time::pause();
+    let mut removing_a = Box::pin(call(&e, Method::POST, "/projects/a/remove", None));
+    assert!(poll!(&mut removing_a).is_pending());
+    let (status, body) = call(&e, Method::POST, "/projects/b/remove", None).await;
+
+    // Cancel both waiters before asserting, so a failure leaves no fixture work.
+    drop(removing_a);
+    waking.abort();
+    assert!(waking.await.unwrap_err().is_cancelled());
+    assert!(e.proj().projects.contains_key(&a));
+    assert!(e.mirror("a").exists());
+    assert!(!support::events::all(&e).iter().any(|event| {
+        event.project.as_ref() == Some(&a) && matches!(event.kind, EventKind::ProjectRemoved { .. })
+    }));
+
+    // A fresh removal needs both locks: cancellation must release its place in
+    // the queue. Resume real time so blocking filesystem cleanup can finish.
+    tokio::time::resume();
+    let (retry, reply) = tokio::time::timeout(
+        Duration::from_secs(30),
+        call(&e, Method::POST, "/projects/a/remove", None),
+    )
+    .await
+    .expect("cancelling the waiting removal must release its locks");
+    assert_eq!(retry, StatusCode::OK, "{reply}");
+    assert!(!e.mirror("a").exists());
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "independent removal must still work: {body}"
+    );
+    assert!(!e.mirror("b").exists());
+    for p in [&a, &b] {
+        assert!(!e.proj().projects.contains_key(p));
+        assert_eq!(
+            support::events::all(&e)
+                .iter()
+                .filter(|event| {
+                    event.project.as_ref() == Some(p)
+                        && matches!(event.kind, EventKind::ProjectRemoved { .. })
+                })
+                .count(),
+            1
+        );
+    }
 }

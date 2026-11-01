@@ -586,3 +586,127 @@ async fn both_limited_then_the_fallback_vendor_resumes_first() {
         Vendor::Fake
     );
 }
+
+#[test]
+fn startup_recovers_a_builder_queued_before_restart_and_holds_it_until_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FakeClock::at(Timestamp(1_000_000)));
+    let stub = Arc::new(Stub::default());
+    let reset = clock.now().plus_millis(60_000);
+    let before = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    let queued = before.block_on(async {
+        let e = engine_with_clock(dir.path(), &stub, false, clock.clone());
+        let repo = dir.path().join("repo");
+        support::git::seed_repository(&repo, "main", None, "Seed");
+        support::wait::io(publish::create_mirror(
+            &repo.to_string_lossy(),
+            &e.mirror("p"),
+        ))
+        .await
+        .unwrap();
+        limit_for(&e, Vendor::Codex, 60_000);
+        let mut a = builder();
+        a.base = Some(support::git::git(&repo, &["rev-parse", "HEAD"]));
+        dispatch::start_task(&e, a.clone(), Actor::Engine)
+            .await
+            .unwrap();
+        wait.until("the pre-restart builder to wait at its limit", || {
+            !usage_limit_notices(&e).is_empty()
+        })
+        .await;
+        assert_eq!(state(&e), TaskState::Preparing);
+        assert_eq!(stub.starts.load(Ordering::SeqCst), 0);
+        assert!(e.proj().runs[&a.run].ended.is_none());
+        a
+    });
+    // Dropping the runtime kills the old waiter and timer, as an engine exit does.
+    drop(before);
+    let after = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    after.block_on(async {
+        let e = open(dir.path(), &stub, clock.clone());
+        assert!(e.vendors.windows().is_empty());
+        assert_eq!(e.proj().runs[&queued.run].assignment, queued);
+        // Stop at the bind boundary: the actual start path restores the vendor
+        // and schedules reconciliation, without requiring socket privileges.
+        std::fs::create_dir(&e.cfg.paths.engine_sock).unwrap();
+        let error = dvb_engine::start(e.clone()).await.unwrap_err();
+        assert!(error.to_string().contains("Is a directory"), "{error}");
+        assert!(e.vendors.is_limited(Vendor::Codex));
+        assert_eq!(e.vendors.resets_at(Vendor::Codex), Some(reset));
+        wait.until("the interrupted queued builder to be reconciled", || {
+            matches!(state(&e), TaskState::RetryPending { .. })
+        })
+        .await;
+        // Recovery may replace the interrupted assignment; it must still wait
+        // for the original vendor and resume without a new task or owner action.
+        clock.advance_millis(5_000);
+        tokio::time::advance(std::time::Duration::from_secs(5)).await;
+        wait.until(
+            "the recovered builder to wait at the restored limit",
+            || {
+                state(&e) == TaskState::Preparing
+                    && e.proj().tasks[&TaskId::new("t")].view.reason.as_deref()
+                        == Some("Waiting for a usage limit")
+            },
+        )
+        .await;
+        assert_eq!(stub.starts.load(Ordering::SeqCst), 0);
+        assert!(reroutes(&e).is_empty());
+        clock.set(reset.plus_millis(-1));
+        tokio::time::advance(std::time::Duration::from_millis(54_999)).await;
+        tokio::task::yield_now().await;
+        assert!(e.vendors.is_limited(Vendor::Codex));
+        assert_eq!(stub.starts.load(Ordering::SeqCst), 0);
+        clock.set(reset);
+        tokio::time::advance(std::time::Duration::from_millis(1)).await;
+        wait.until("the recovered builder to launch at reset", || {
+            state(&e) == TaskState::Running && stub.starts.load(Ordering::SeqCst) == 1
+        })
+        .await;
+        let run = e.proj().tasks[&TaskId::new("t")].facts.run.clone().unwrap();
+        let assignment = e.proj().runs[&run].assignment.clone();
+        assert_eq!(assignment.task, queued.task);
+        assert_eq!(assignment.hire, queued.hire);
+        assert_eq!(assignment.model, queued.model);
+        assert_eq!(assignment.vendor, queued.vendor);
+        let units = stub.units.lock().unwrap().clone();
+        assert_eq!(
+            units,
+            vec![UnitId {
+                vendor: Vendor::Codex,
+                run: run.clone()
+            }]
+        );
+        assert!(stub.is_active(&run));
+        let events = support::events::all(&e);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|ev| matches!(ev.kind, EventKind::RunLaunched { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|ev| matches!(
+                    ev.kind,
+                    EventKind::VendorResumed {
+                        vendor: Vendor::Codex
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert!(!e.vendors.is_limited(Vendor::Codex));
+        assert!(reroutes(&e).is_empty());
+    });
+}

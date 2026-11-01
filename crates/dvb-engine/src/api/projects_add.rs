@@ -135,6 +135,19 @@ pub async fn add_project(
                 None
             })
     };
+    // Cloning may have overlapped another add and its removal. Refuse a known
+    // removal, then serialize mirror reuse/rename and registration with cleanup.
+    if let Some(refusal) = still_removing(&e, &body.name) {
+        return Err(refusal.into());
+    }
+    let finalizing = e.lock_mirror(&mirror).await;
+    if e.proj().projects.values().any(|p| p.view.name == body.name) {
+        return Err(Refusal::new(
+            RefusalCode::ValueChanged,
+            format!("project {} exists", body.name),
+        )
+        .into());
+    }
     if mirror.exists() {
         // Recover a crash after finalizing the mirror but before ProjectAdded.
         // Both add modes can reuse an unregistered mirror, but only for the
@@ -219,6 +232,7 @@ pub async fn add_project(
         }
         Ok(kinds)
     })?;
+    drop(finalizing);
     // What dvb found among the open issues; the project is added either way.
     match crate::issues::list(&e, &repo).await {
         Ok(listed) => {

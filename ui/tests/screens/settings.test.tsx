@@ -509,6 +509,81 @@ describe('commit author', () => {
 });
 
 describe('updates', () => {
+  it.each(
+    ['check', 'start'].flatMap((pending) =>
+      ['reconnect', 'version', 'both'].map((transition) => ({ pending, transition })),
+    ),
+  )(
+    'drops a delayed $pending body after a $transition transition',
+    async ({ pending, transition }) => {
+      let body!: ReadableStreamDefaultController<Uint8Array>;
+      const updating = {
+        current: '0.1.0',
+        available: '0.1.1',
+        updating: { to: '0.1.1', runs_active: 0 },
+      };
+      const version = transition === 'reconnect' ? '0.1.0' : '0.1.1';
+      const fresh = { current: version, available: '0.1.2' };
+      const delayed = () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              body = controller;
+            },
+          }),
+          {
+            headers: {
+              'content-type': 'application/json',
+              'dvb-version': transition === 'both' ? '0.1.0' : '',
+            },
+          },
+        );
+      const fetcher = vi.fn<typeof fetch>();
+      if (pending === 'start')
+        fetcher.mockResolvedValueOnce(json({ current: '0.1.0', available: '0.1.1' }, ''));
+      fetcher.mockImplementationOnce(async (input, options) => {
+        expect(String(input)).toBe(pending === 'start' ? '/api/update' : '/api/update?check=true');
+        expect(options?.method).toBe(pending === 'start' ? 'POST' : 'GET');
+        return delayed();
+      });
+      fetcher.mockImplementation(async () => json(fresh, ''));
+      const source = createFixtureSource({ fetch: fetcher });
+      const check = vi.spyOn(source.getSnapshot(), 'updateCheck');
+      const { user } = mount(<Settings tab="updates" />, source);
+      if (pending === 'start') {
+        await screen.findByText('Available: 0.1.1');
+        await user.click(screen.getByRole('button', { name: 'Update dvb' }));
+      }
+      await act(flush);
+      expect(body).toBeDefined();
+      expect(check).toHaveBeenCalledTimes(1);
+      if (transition !== 'version')
+        act(() => source.set({ connection: { state: 'reconnecting' } }));
+      const connection =
+        version === '0.1.0'
+          ? { state: 'connected' as const, engineVersion: version }
+          : { state: 'version-mismatch' as const, engineVersion: version, appVersion: '0.1.0' };
+      act(() => source.set({ connection }));
+      await act(flush);
+      // The new check must finish without waiting for the old response body.
+      expect(check).toHaveBeenCalledTimes(2);
+      expect(screen.getByText(`Installed: ${version}`)).toBeInTheDocument();
+      expect(screen.getByRole('status')).toHaveTextContent('Available: 0.1.2');
+      if (transition === 'reconnect')
+        expect(screen.getByRole('button', { name: 'Update dvb' })).toBeEnabled();
+      await act(async () => {
+        body.enqueue(new TextEncoder().encode(JSON.stringify(updating)));
+        body.close();
+        await flush();
+      });
+      expect(source.getSnapshot().connection).toEqual(connection);
+      expect(screen.getByText(`Installed: ${version}`)).toBeInTheDocument();
+      expect(screen.getByRole('status')).toHaveTextContent('Available: 0.1.2');
+      expect(screen.queryByText(/Updating to/)).not.toBeInTheDocument();
+      act(() => source.set({ connection: { ...connection } }));
+      expect(check).toHaveBeenCalledTimes(2);
+    },
+  );
   it('leaves packaged updates to the package manager', async () => {
     const source = createFixtureSource();
     const packaged = 'dvb came from your package manager; update it with `yay -Syu dvb-bin`.';

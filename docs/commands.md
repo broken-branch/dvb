@@ -536,7 +536,8 @@ the first active hire. A routine hire is never the default while the role has
 another active hire.
 
 `[routine]` marks a role's routine hire (`dvb hire ... --routine`), for example
-`dvb hire backend gpt-6.1-sol --routine`. The orchestrator marks routine tasks:
+`dvb hire <role-id> gpt-6.1-sol --routine`, using the id from `dvb role list <project>`.
+The orchestrator marks routine tasks:
 follow-up fixes, tests, docs, chores and small mechanical changes. A routine
 task's builder rounds run on the routine hire, and so does every fix round on
 an open PR (CI fix, review fix, retry with text), whatever the task. After two
@@ -590,7 +591,7 @@ The app's Settings → Preferences has the same Maximum runs control.
 
 Lowering the limit leaves running work alone and holds new starts until capacity
 is available. Raising it wakes waiting work automatically. Each run may use up to
-8 GB of memory; memory, disk and load holds also apply. Values survive restart
+8 GiB of memory; memory, disk and load holds also apply. Values survive restart
 and use settings history.
 
 Each run has a fixed time limit from its launch: 4 hours for builders and clerks,
@@ -613,8 +614,9 @@ it (either one alone keeps the other); the next commit dvb publishes uses it,
 with no restart.
 
 dvb keeps the owner's identity out of what it publishes: the name and email
-can't contain the owner's name or email as recorded at GitHub setup. Neither may
-be empty, contain a line break, `<` or `>`, or match a secret pattern of the
+can't contain the owner's name or email as recorded at GitHub setup. An empty
+name or email resets that field to dvb's default, except when publishing as the
+owner, when it is refused. Neither may contain a line break, `<` or `>`, or match a secret pattern of the
 [publication scan](#publication-scan). A refusal names the field and the rule that matched, for
 example `The commit author name can't contain your name (…) unless you publish
 as yourself.`; the command adds the flags that change it (`--as-owner` only
@@ -630,7 +632,7 @@ default name and email unless `--name` or `--email` is given.
 | Key | Values | Default |
 |---|---|---|
 | `max_runs` | whole number, at least 1 | `3` |
-| `runs_memory_gb` | whole GiB, at least 2: the memory limit of all runs together (`dvb.slice`), changed live | the slice's limit (half RAM at install) |
+| `runs_memory_gb` | whole GiB, from 2 up to the PC's RAM: the memory limit of all runs together (`dvb.slice`), changed live | the slice's limit (half RAM at install) |
 | `response_style` | `"Simple"`, `"Clear"`, `"Technical"` or `"Expert"` | `"Clear"` |
 | `question_format` | `"simple"`, `"quick_compare"` or `"swot"` | `"quick_compare"` |
 | `model_mode` | `"Custom"` or `"Auto"` | `"Custom"` |
@@ -651,7 +653,7 @@ itself with the question's recommended option, recorded as answered by dvb: a
 goal's plan question whose recommended option approves the plan (the plan's
 tasks then start), and a what-next proposal whose recommended option has an
 effect, when it names its issues (`ask`'s `issues`, or the issues the proposed
-goal carries). Every other question goes to the owner as before: a recommended
+goal carries) and every issue is readable and trusted. Every other question goes to the owner as before: a recommended
 "Not yet", merge anyway, failure, stop and retry questions, and proposals naming
 no issue. A name that is not a project is refused with `INVALID_VALUE`.
 
@@ -685,7 +687,7 @@ refuses the scan.
 
 | Command | Action |
 |---|---|
-| `dvb stop <task> [--reason <text>] [--json]` | Stop a task, in any state; its branch, workspace and results are kept. The reason is recorded and shown as the task's `reason`; with a reason the orchestrator is not woken to ask why, without one it is woken and may ask you. |
+| `dvb stop <task> [--reason <text>] [--json]` | Stop a task; done, cancelled or failed tasks are refused with `ALREADY_TERMINAL`, and already stopped tasks with `ALREADY_STOPPED`. Its branch, workspace and results are kept. The reason is recorded and shown as the task's `reason`; with a reason the orchestrator is not woken to ask why, without one it is woken and may ask you. |
 | `dvb pause <project> [--json]` | No new runs or steps start until the project is resumed; what is running carries on. `dvb wait` on its goals ends with code 6. |
 | `dvb resume <project\|task\|goal> [--json]` | Unpause a project, resume a stopped task from where it stopped, or ask a goal's plan on hold again under a new question id ([A plan on hold](#a-plan-on-hold)). An id that is none of these is refused: `NOT_FOUND (no task, goal or project <id>)`. |
 | `dvb redirect <goal> <text>` | Change course: the goal's unstarted tasks are dropped and the orchestrator plans the new text, then asks for your yes. |

@@ -47,7 +47,7 @@ For changes to contracts, prompts, installation, units or CI, run
 installer changes, including `scripts/test-install.py` for installer behavior.
 `scripts/test-leak-check.py` covers `scripts/leak-check.sh` and `scripts/public-copy.sh`;
 the `contracts` job runs it on pull requests, then leak-checks the public copy of the
-tree with the `LEAK_DENYLIST` secret as the denylist (skipped with a notice when empty).
+tree with the `LEAK_DENYLIST` secret as the denylist (only the denylist check is skipped with a notice when empty).
 
 Contract generation also publishes `prompts/verdict.schema.json`,
 `contracts/wording.json` and `ui/src/api/wording.json`. The contracts gate requires
@@ -59,7 +59,8 @@ Obtain code review and pass every PR check, including any applicable release dry
 The `rust`, `ui`, `contracts`, `identity`, `e2e` and `upgrade` jobs cover Rust
 checks/tests, UI build/format/lint/tests, schema regeneration, commit identity and
 secrets, installed Fake acceptance, and upgrade preservation/rollback.
-`scripts/check.sh [ui|rust|contracts]` reproduces the corresponding complete gate.
+`scripts/check.sh [ui|rust|contracts]` runs the corresponding script checks;
+CI also checks the Omarchy plugin and runs the public-copy leak checks separately.
 CI runs on pull requests and on manual `workflow_dispatch` (use it to run the
 complete suite on main). It does not run on merges: the main ruleset requires
 up-to-date branches and dvb squash-merges, so main gets the tree that just passed
@@ -72,6 +73,8 @@ are disabled. Tests use Fake providers/forges without model calls or network.
 `scripts/run-e2e.sh --dev --no-browser` uses a temporary engine and local Git;
 installed acceptance requires a disposable systemd/polkit install with sudo and
 `DVB_FAKE=1`. Browser checks require Chrome and the UI-pinned playwright-core.
+For `scripts/run-e2e.sh` with a browser, install it beside the acceptance script:
+`npm install --prefix scripts/e2e --no-save "playwright-core@$(node -p 'require("./ui/package.json").devDependencies["playwright-core"]')"`.
 Run browsers only when the assigned task requires them. Real-provider checks
 are opt-in via `--provider claude|codex` with `DVB_E2E_PROJECT`; they need a
 configured, dedicated idle project and consume model usage.
