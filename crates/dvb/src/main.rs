@@ -39,6 +39,14 @@ enum Cmd {
         #[arg(long)]
         browser: Option<std::path::PathBuf>,
     },
+    /// Internal: dvb-setup's pre-install backup. Writes a consistent copy of the
+    /// existing database `from`, committed events still in its WAL included, to
+    /// the new file `to` (mode 0600). Run as the database's owner.
+    #[command(hide = true)]
+    StoreSnapshot {
+        from: std::path::PathBuf,
+        to: std::path::PathBuf,
+    },
     #[command(flatten)]
     Verb(Verb),
 }
@@ -100,6 +108,15 @@ fn main() -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("dvb engine: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Cmd::StoreSnapshot { from, to } => {
+            match dvb_store::Store::open_unmigrated(&from).and_then(|store| store.snapshot(&to)) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("dvb store-snapshot: {e}");
                     ExitCode::FAILURE
                 }
             }

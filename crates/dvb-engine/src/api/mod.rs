@@ -133,6 +133,7 @@ fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(settings::get_publication))
         .routes(routes!(settings::set_publication))
         .routes(routes!(usage::get_usage))
+        .routes(routes!(usage::check_usage))
         .routes(routes!(update::get_update))
         .routes(routes!(update::start_update))
         .routes(routes!(report::report))

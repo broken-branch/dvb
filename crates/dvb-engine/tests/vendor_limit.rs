@@ -202,3 +202,48 @@ async fn a_restart_restores_the_latest_deadline_not_the_first() {
         .unwrap();
     assert!(e.clock.now() >= later);
 }
+
+#[tokio::test]
+async fn a_checked_reading_sets_the_pause_to_its_reset_or_ends_it() {
+    let (_dir, e) = engine();
+    let now = e.clock.now().0;
+    vendors::record(
+        &e,
+        Vendor::Codex,
+        &body(100.0, Some(Timestamp(now + 60_000))),
+    )
+    .unwrap();
+    // Still full, with an earlier reset: the pause takes it, and says so.
+    let sooner = Timestamp(now + 800);
+    let w = vendors::check(&e, Vendor::Codex, &body(100.0, Some(sooner))).unwrap();
+    assert!(w.limited && w.resets_at == Some(sooner), "{w:?}");
+    assert_eq!(
+        kinds(&e)
+            .into_iter()
+            .rfind(|k| matches!(k, EventKind::VendorLimited { .. })),
+        Some(EventKind::VendorLimited {
+            vendor: Vendor::Codex,
+            resets_at: Some(sooner),
+        })
+    );
+    timeout(Duration::from_secs(5), e.vendors.wait_open(Vendor::Codex))
+        .await
+        .unwrap();
+    assert!(e.clock.now() >= sooner);
+
+    // A full reading whose reset has passed is an open window: the pause ends once.
+    vendors::record(
+        &e,
+        Vendor::Codex,
+        &body(100.0, Some(Timestamp(now + 60_000))),
+    )
+    .unwrap();
+    let past = Timestamp(e.clock.now().0 - 1);
+    let w = vendors::check(&e, Vendor::Codex, &body(100.0, Some(past))).unwrap();
+    assert!(!w.limited && !e.vendors.is_limited(Vendor::Codex));
+    let resumed = kinds(&e)
+        .iter()
+        .filter(|k| matches!(k, EventKind::VendorResumed { .. }))
+        .count();
+    assert_eq!(resumed, 2);
+}

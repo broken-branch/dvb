@@ -15,7 +15,7 @@ use dvb_core::{
 };
 use dvb_forge::FakeForge;
 use dvb_store::{NewEvent, Store};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use tokio::sync::broadcast;
@@ -310,6 +310,9 @@ pub struct Engine {
     /// remove or repoint.
     pub(crate) mirror_retries: tokio::sync::Mutex<crate::publish::mirror::Retries>,
     pub(crate) mirror_pass: Mutex<Option<dvb_core::api::MirrorPass>>,
+    /// Names of removed projects whose mirror is not freed yet; an add of one
+    /// would reuse the mirror the removal is about to delete.
+    pub(crate) removing: Mutex<BTreeSet<String>>,
     proj: Mutex<Projections>,
     feed: broadcast::Sender<Event>,
     /// Each task's lock: an effect is checked, sent and recorded under it.
@@ -486,6 +489,7 @@ impl Engine {
             github_setup_client: Mutex::new(None),
             mirror_retries: tokio::sync::Mutex::new(crate::publish::mirror::Retries::default()),
             mirror_pass: Mutex::new(None),
+            removing: Mutex::new(BTreeSet::new()),
             proj: Mutex::new(projections),
             feed,
             locks: KeyedLocks::default(),

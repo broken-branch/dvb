@@ -7,7 +7,8 @@ single executable; installation and scripts package and exercise it.
 
 ## Main modules
 
-- `crates/dvb/src/main.rs`: executable dispatch.
+- `crates/dvb/src/main.rs`: executable dispatch, including the hidden
+  `dvb store-snapshot <database> <to>` that dvb-setup's pre-install backup runs as dvb.
 - `crates/dvb-run/src/lib.rs`, `exec.rs`: worker entry, preparation, build cache,
   toolchain install and collection.
 - `crates/dvb-run/src/preflight.rs`: environment checks and fix hints.
@@ -15,16 +16,21 @@ single executable; installation and scripts package and exercise it.
 - `crates/dvb-run/src/stream.rs`, `usage.rs`, `child.rs`: output, the CLI's stderr tail,
   tokens and children.
 - `crates/dvb-run/src/client.rs`, `verb.rs`, `login.rs`: run API and vendor login.
+- `crates/dvb-run/src/reading.rs`: a usage check's reading run (`DVB_USAGE_READING=1`):
+  one window reading (Codex `account/rateLimits/read`, the Fake script's `rate_limit`
+  step), no session, left in `reading.json`.
 - `install/install.sh`: prerequisites, users, paths and units; see
   [installation details](../install.md).
-- `install/dvb-setup`: shared owner recording, desk restriction and unit activation;
-  called by the installer and directly after a package install.
+- `install/dvb-setup`: shared pre-install database backup, owner recording, desk
+  restriction and unit activation; called by the installer and directly after a
+  package install.
 - `install/dvb*.service`, `dvb*.socket`, `dvb-run-.service.d/10-common.conf`,
   `50-dvb.rules`: engine, worker and desk services, socket access and polkit.
 - `scripts/run-e2e.sh`, `run-upgrade.sh`: acceptance and upgrade entry points.
 - `scripts/e2e/lib.sh`: sourced transport, polling, diagnostics and origin seeding.
 - `scripts/provider-e2e.sh`, `scripts/e2e/browser.mjs`: opt-in provider and browser checks.
 - `crates/dvb/tests/crash.rs`: crash recovery with persistent Fake forge and FIFO gates.
+- `crates/dvb/tests/store_snapshot.rs`: the pre-install backup of an engine stopped by SIGTERM.
 - `scripts/test-install.py`: temporary-root installer regression cases.
 - `scripts/check.sh`, `gen-contracts.sh`, `release.sh`: CI gates, schemas and packaging.
 - `scripts/public-copy.sh`, `leak-check.sh`: the tree the public copy sees (rewrites, and

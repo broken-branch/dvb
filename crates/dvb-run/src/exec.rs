@@ -38,6 +38,9 @@ pub struct RunEnv {
     pub dev: bool,
     /// A login run (`dvb login`): the vendor's login command, nothing else.
     pub login: bool,
+    /// A usage reading run (a usage check): one reading of the vendor's window,
+    /// no session.
+    pub reading: bool,
     /// The vendor CLI to use instead of the one on `PATH` (`DVB_CLI_BIN`).
     pub cli_bin: Option<PathBuf>,
     /// The run directory (the working directory).
@@ -72,6 +75,7 @@ impl RunEnv {
             fake_script: std::env::var("DVB_FAKE_SCRIPT").ok().map(PathBuf::from),
             dev: std::env::var("DVB_DEV").is_ok_and(|v| v == "1"),
             login: std::env::var("DVB_LOGIN").is_ok_and(|v| v == "1"),
+            reading: std::env::var("DVB_USAGE_READING").is_ok_and(|v| v == "1"),
             cli_bin: std::env::var("DVB_CLI_BIN").ok().map(PathBuf::from),
             dir: std::env::current_dir().map_err(|e| e.to_string())?,
         })
@@ -297,6 +301,8 @@ pub async fn exec(run: &str) -> RunOutcome {
     let stopped = share_on_stop(&env.dir);
     let outcome = if env.login {
         crate::login::run(&env, crate::login::Waits::default())
+    } else if env.reading {
+        crate::reading::run(&env)
     } else {
         whole_run(&env, run).await
     };

@@ -41,6 +41,8 @@ def prepare(root, tmpfiles):
                'exec "$DVB_TEST_TMPFILES" --root="$DVB_TEST_ROOT" "$@"\n')
     # If an incompatible flag regression reaches system operations, fail safely.
     executable(stubs / 'ssh', ':\n')
+    executable(stubs / 'runuser', 'printf "%s\\n" "$*" >> "$DVB_TEST_ROOT/runuser.log"\n'
+               '[ "$1 $2 $3" = "-u dvb --" ]; shift 3; exec "$@"\n')
     for command in ('groupadd', 'useradd', 'usermod'):
         executable(stubs / command, 'echo "unexpected system operation" >&2; exit 1\n')
     # Only the cockpit's user units: enabled for every session, started in the owner's.
@@ -526,7 +528,13 @@ def check_packaged_setup(tmpfiles):
         for name in ('packaged', 'role-engine', 'role-cockpit'):
             (opt / name).touch()
         (opt / 'versions/0.1.1').mkdir(parents=True)
-        shutil.copyfile(root / 'dvb', opt / 'versions/0.1.1/dvb')
+        # The database backup itself is crates/dvb/tests/store_snapshot.rs.
+        executable(opt / 'versions/0.1.1/dvb', '\n'.join([
+            'case "$1" in',
+            '  store-snapshot) [ -z "${DVB_TEST_SNAPSHOT_FAILS:-}" ]; cp "$2" "$3"; chmod 0600 "$3" ;;',
+            '  *) echo "dvb 0.1.1" ;;',
+            'esac',
+        ]))
         (opt / 'current').symlink_to('versions/0.1.1')
         # pacman and its hooks have already supplied the files, users and folders.
         data = root / 'var/lib/dvb/state'
@@ -555,7 +563,7 @@ def check_packaged_setup(tmpfiles):
         executable(root / 'stubs/systemctl',
                    'printf "%s\\n" "$*" >> "$DVB_TEST_SYSTEMCTL_LOG"\n'
                    'case "$*" in\n'
-                   '  stop*) ;;\n'
+                   '  stop*) [ -z "${DVB_TEST_STOP_FAILS:-}" ] ;;\n'
                    '  --user*) [ "${DVB_TEST_SESSION:-1}" = 1 ] ;;\n'
                    '  *) [ "$(cat "$DVB_TEST_ROOT/var/lib/dvb/state/owner")" = 4242 ] ;;\n'
                    'esac\n')
@@ -609,6 +617,27 @@ def check_packaged_setup(tmpfiles):
                 backups = list((data / 'backups').glob('pre-install-*.sqlite'))
                 assert len(backups) == 1 and backups[0].read_bytes() == b'existing database'
                 assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+                assert (root / 'runuser.log').read_text() == (
+                    f'-u dvb -- {opt}/current/dvb store-snapshot {data}/dvb.sqlite {backups[0]}\n')
+                (root / 'runuser.log').unlink()
+            else:
+                assert not (root / 'runuser.log').exists()
+
+        # A failed stop or backup ends setup before the owner file and the units.
+        before = snapshot(root)
+        for extra, backed_up in ((dict(DVB_TEST_STOP_FAILS='1'), False),
+                                 (dict(DVB_TEST_SNAPSHOT_FAILS='1'), True)):
+            result = subprocess.run(setup, env=dict(env, SUDO_USER='desktop', **extra),
+                                    capture_output=True, text=True, timeout=INSTALL_TIMEOUT)
+            cases += 1
+            assert result.returncode != 0, result
+            assert 'nothing' in result.stderr and 'changed' in result.stderr, result.stderr
+            assert (root / 'systemctl.log').read_text() == 'stop dvb.service\n'
+            (root / 'systemctl.log').unlink()
+            assert (root / 'runuser.log').exists() == backed_up
+            if backed_up:
+                (root / 'runuser.log').unlink()
+            assert snapshot(root) == before
 
         before = snapshot(root)
         for options, extra in (([], dict(SUDO_USER='')),

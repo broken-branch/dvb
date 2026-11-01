@@ -1030,8 +1030,17 @@ async fn the_start_up_check_removes_the_directories_nothing_reads_again() {
     let other = work.join("01M5A0000000000000000G1N03");
     std::fs::create_dir_all(&other).unwrap();
     std::fs::write(other.join("login-result"), "ok").unwrap();
+    // A usage check's reading run records no run either; this one has read.
+    let reading = work.join("01M5A0000000000000000G1N04");
+    std::fs::create_dir_all(&reading).unwrap();
+    std::fs::write(
+        reading.join("env"),
+        "DVB_RUN_ID=x\nDVB_USAGE_READING=1\nDVB_VENDOR=codex\n",
+    )
+    .unwrap();
+    std::fs::write(reading.join("reading.json"), r#"{"failed":"no login"}"#).unwrap();
     dvb_engine::reconcile::reconcile(e.clone()).await.unwrap();
-    for removed in [work.join("b1"), work.join("o1"), ended] {
+    for removed in [work.join("b1"), work.join("o1"), ended, reading] {
         wait.until(&format!("{} to be removed", removed.display()), || {
             !removed.exists()
         })

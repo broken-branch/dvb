@@ -29,6 +29,9 @@ function endpoints(
     verdict: (id: Schemas['TaskId']) => call('/tasks/{id}/verdict', 'get', { params: { id } }),
     usage: (filter?: NonNullable<paths['/usage']['get']['parameters']['query']>) =>
       call('/usage', 'get', { query: filter }),
+    /** Takes one fresh reading of a paused vendor's usage window. */
+    checkUsage: (vendor: Schemas['Vendor']) =>
+      call('/usage/{vendor}/check', 'post', { params: { vendor } }),
     // Reads the release list now; during an update the engine answers from its progress.
     updateCheck: () => call('/update', 'get', { query: { check: true } }),
     github: (signal?: AbortSignal) => call('/github', 'get', { signal }),

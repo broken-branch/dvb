@@ -46,6 +46,9 @@ pub async fn add_project(
     if e.proj().projects.values().any(|p| p.view.name == body.name) {
         return Err(invalid(format!("project {} exists", body.name)));
     }
+    if let Some(refusal) = still_removing(&e, &body.name) {
+        return Err(refusal.into());
+    }
     if mirror.exists() {
         // Check request identity before create_or_resume can create a repository.
         // GitHub clones use this canonical URL; the local Fake uses the repo path.
@@ -236,4 +239,21 @@ pub async fn add_project(
     view.publication_mismatch =
         recent.and_then(|recent| publish::project::mismatch(recent, &e.publication()));
     Ok((StatusCode::CREATED, Json(view)))
+}
+
+/// A removal of this name has not freed its mirror yet, which this add could
+/// reuse and then lose.
+fn still_removing(e: &crate::engine::Engine, name: &str) -> Option<Refusal> {
+    e.removing
+        .lock()
+        .unwrap_or_else(dvb_core::sync::recover)
+        .contains(name)
+        .then(|| {
+            Refusal::new(
+                RefusalCode::ValueChanged,
+                format!(
+                    "project {name} is still being removed: add it again once its removal has finished"
+                ),
+            )
+        })
 }

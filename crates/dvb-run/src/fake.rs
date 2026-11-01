@@ -7,19 +7,23 @@
 //! `{"run": ["<verb words>", {body}], "save": "<name>"?}` calls `dvb run <verb>`
 //! like an agent CLI would, and may save the reply; later strings may use
 //! `${<name>.<field>.<index>}` to read a saved reply;
-//! `{"usage": {"uncached_in", "cached_in", "out"}}`; `{"sleep_ms": n}`;
+//! `{"usage": {"uncached_in", "cached_in", "out"}}`;
+//! `{"rate_limit": {"used_pct", "window", "resets_at"}}` reports the vendor's
+//! usage window (`resets_at` in Unix milliseconds or null); a usage reading run
+//! takes the script's first one as its reading; `{"sleep_ms": n}`;
 //! `{"stderr": "text"}` writes text as the CLI's stderr; `{"exit": code}`.
 
 use dvb_core::Effort;
 use dvb_core::event::ServedModel;
 use dvb_core::provider::{ExitStatus, Provider, ProviderError, RunItem, Session};
+use dvb_core::run_verbs::RateLimitBody;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum Step {
     Write {
@@ -32,12 +36,13 @@ enum Step {
         cached_in: u64,
         out: u64,
     },
+    RateLimit(RateLimitBody),
     SleepMs(u64),
     Stderr(String),
     Exit(i32),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ScriptStep {
     #[serde(flatten)]
@@ -65,10 +70,7 @@ impl Provider for Fake {
         model: &str,
         _effort: Effort,
     ) -> Result<Box<dyn Session>, ProviderError> {
-        let text = std::fs::read_to_string(&self.script)
-            .map_err(|e| ProviderError::Other(format!("{}: {e}", self.script.display())))?;
-        let steps: Vec<ScriptStep> = serde_json::from_str(&text)
-            .map_err(|e| ProviderError::Other(format!("{}: {e}", self.script.display())))?;
+        let steps = steps(&self.script).map_err(ProviderError::Other)?;
         let mut queue = VecDeque::new();
         queue.push_back(Pending::Item(RunItem::ModelServed(ServedModel::Confirmed(
             model.to_owned(),
@@ -83,6 +85,22 @@ impl Provider for Fake {
             ended: false,
         }))
     }
+}
+
+fn steps(script: &Path) -> Result<Vec<ScriptStep>, String> {
+    let text = std::fs::read_to_string(script).map_err(|e| format!("{}: {e}", script.display()))?;
+    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", script.display()))
+}
+
+/// A usage reading: the script's first `rate_limit` step, if it has one.
+pub fn read_window(script: &Path) -> Result<Option<RateLimitBody>, String> {
+    Ok(steps(script)?.into_iter().find_map(|s| {
+        if let Step::RateLimit(body) = s.step {
+            Some(body)
+        } else {
+            None
+        }
+    }))
 }
 
 enum Pending {
@@ -144,6 +162,15 @@ impl FakeSession {
                 uncached_in,
                 cached_in,
                 out,
+            },
+            Step::RateLimit(RateLimitBody {
+                used_pct,
+                window,
+                resets_at,
+            }) => RunItem::RateLimit {
+                used_pct,
+                window,
+                resets_at,
             },
             Step::SleepMs(ms) => {
                 std::thread::sleep(std::time::Duration::from_millis(ms));
@@ -276,6 +303,30 @@ mod tests {
                 RunItem::Ended(ExitStatus { code: Some(0) }),
             ]
         );
+    }
+
+    #[test]
+    fn a_rate_limit_step_is_the_window_and_the_first_one_is_the_reading() {
+        let script = r#"[{"rate_limit": {"used_pct": 100, "window": "5h", "resets_at": 1700000000000}},
+            {"rate_limit": {"used_pct": 3, "window": "7d", "resets_at": null}}]"#;
+        let (dir, mut s) = session(script);
+        assert!(matches!(s.next(), Some(RunItem::ModelServed(_))));
+        let full = RunItem::RateLimit {
+            used_pct: 100.0,
+            window: "5h".into(),
+            resets_at: Some(dvb_core::Timestamp(1_700_000_000_000)),
+        };
+        assert_eq!(s.next(), Some(full));
+        assert_eq!(
+            read_window(&dir.path().join("script.json")).unwrap(),
+            Some(RateLimitBody {
+                used_pct: 100.0,
+                window: "5h".into(),
+                resets_at: Some(dvb_core::Timestamp(1_700_000_000_000)),
+            })
+        );
+        std::fs::write(dir.path().join("none.json"), r#"[{"exit": 0}]"#).unwrap();
+        assert_eq!(read_window(&dir.path().join("none.json")).unwrap(), None);
     }
 
     #[test]

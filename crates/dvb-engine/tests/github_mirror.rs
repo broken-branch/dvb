@@ -1262,6 +1262,100 @@ async fn removing_and_readding_the_same_repository_reuses_one_board_and_clones_a
 }
 
 #[tokio::test]
+async fn an_add_while_the_same_name_is_still_being_removed_is_refused_and_a_later_add_keeps_its_mirror()
+ {
+    use axum::http::{Method, StatusCode};
+    use support::git::{git, seed_repository};
+
+    let dir = tempfile::tempdir().unwrap();
+    let origin = dir.path().join("origin");
+    seed_repository(&origin, "main", None, "Seed");
+    let traced = Arc::new(InterruptedForge::new(Arc::new(
+        dvb_forge::FakeForge::local_git(),
+    )));
+    let e = support::engine::open_with(
+        &dir.path().join("engine"),
+        "dvb",
+        dvb_engine::EngineOptions {
+            forge: Some(traced.clone()),
+            ..Default::default()
+        },
+    );
+    e.manual_dispatch();
+    let body =
+        serde_json::json!({"name": "Project", "repo": origin.to_str().unwrap(), "ci": "no_ci"});
+    let (status, first) =
+        support::http::call(&e, Method::POST, "/projects", Some(body.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    let mirror_dir = e.mirror("Project");
+
+    // The removal pauses after its event, while the old mirror is still on disk,
+    // and the same name is added on another thread.
+    let during = Arc::new(std::sync::Mutex::new(None));
+    *traced.on_forget_mirror.lock().unwrap() = Some(Box::new({
+        let (e, body, during) = (e.clone(), body.clone(), during.clone());
+        move || {
+            assert!(
+                e.proj().projects.is_empty(),
+                "the removal event is recorded"
+            );
+            assert!(
+                e.mirror("Project").exists(),
+                "the old mirror is not freed yet"
+            );
+            let added = std::thread::scope(|s| {
+                s.spawn(|| {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap()
+                        .block_on(support::http::call(
+                            &e,
+                            Method::POST,
+                            "/projects",
+                            Some(body),
+                        ))
+                })
+                .join()
+                .unwrap()
+            });
+            *during.lock().unwrap() = Some(added);
+        }
+    }));
+    let (status, removed) = support::http::call(
+        &e,
+        Method::POST,
+        &format!("/projects/{}/remove", first["id"].as_str().unwrap()),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    assert_eq!(removed["not_freed"], serde_json::json!([]));
+
+    let (status, refused) = during.lock().unwrap().take().unwrap();
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "VALUE_CHANGED");
+    assert_eq!(
+        refused["detail"],
+        "project Project is still being removed: add it again once its removal has finished"
+    );
+    assert!(
+        e.proj().projects.is_empty(),
+        "the refused add registers nothing"
+    );
+    assert!(!mirror_dir.exists(), "the removal freed the old mirror");
+
+    let (status, second) = support::http::call(&e, Method::POST, "/projects", Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "{second}");
+    assert_eq!(e.proj().projects.len(), 1);
+    assert_eq!(
+        git(&mirror_dir, &["rev-parse", "HEAD"]),
+        git(&origin, &["rev-parse", "HEAD"]),
+        "the registered project has its mirror"
+    );
+}
+
+#[tokio::test]
 async fn a_paused_project_with_stopped_tasks_is_removed_locally_and_github_gets_no_write() {
     use axum::http::{Method, StatusCode};
     let forge = Arc::new(dvb_forge::FakeForge::local_git());

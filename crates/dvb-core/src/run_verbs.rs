@@ -313,6 +313,16 @@ pub struct RateLimitBody {
     pub resets_at: Option<Timestamp>,
 }
 
+/// What a usage reading run (`dvb run exec` with `DVB_USAGE_READING=1`) leaves
+/// in `reading.json` in its run directory: the vendor's window, read without a
+/// model turn, or why there is none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageReading {
+    Read(RateLimitBody),
+    Failed(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CollectedBody {
     /// Absent on driver reports; retains the builder's saved result. A builder

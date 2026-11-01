@@ -1,0 +1,104 @@
+# Maintainer: <who publishes it on the AUR, still to be decided>
+#
+# Requires a release with packaged updates and install/dvb-setup; bump pkgver
+# and checksums before publishing to the AUR.
+# Packages dvb's signed release instead of running install.sh:
+# pacman installs files, sysusers/tmpfiles hooks make the users and folders,
+# and the owner turns dvb on with one command after install (see dvb-bin.install).
+
+pkgname=dvb-bin
+pkgver=0.1.82
+pkgrel=1
+pkgdesc="dvb, an autonomous coding-agent system for one owner (engine service and desktop cockpit; not DVB television)"
+arch=('x86_64')
+url="https://github.com/broken-branch/dvb"
+license=('MIT')
+depends=('glibc' 'gcc-libs' 'systemd' 'polkit' 'git' 'openssh' 'sccache')
+makedepends=('minisign')
+optdepends=('claude-code: runs on Claude models (needed by the default hires)'
+            'openai-codex: runs on Codex models'
+            'chromium: the cockpit window and browser checks in runs'
+            'rustup: runs use the Rust toolchain a project pins'
+            'mise: runs use the Node version a project pins')
+provides=('dvb')
+conflicts=('dvb')
+backup=()
+install=dvb-bin.install
+_tag="v${pkgver}"
+_rel="https://github.com/broken-branch/dvb/releases/download/${_tag}"
+source=("dvb-${pkgver}-x86_64-linux.tar.gz::${_rel}/dvb-${pkgver}-x86_64-linux.tar.gz"
+        "SHA256SUMS-${pkgver}::${_rel}/SHA256SUMS"
+        "SHA256SUMS-${pkgver}.minisig::${_rel}/SHA256SUMS.minisig"
+        "LICENSE-${pkgver}::https://raw.githubusercontent.com/broken-branch/dvb/${_tag}/LICENSE"
+        'dvb.sysusers'
+        'dvb.tmpfiles'
+        'dvb.slice')
+# Pinned for v0.1.82. Run `updpkgsums` after any edit or version bump.
+sha256sums=('fc83fb1e2ff5415a30e8293ae1a52a9b729f1b0fb3346cb4913edbf370676ae1'
+            '4b5864051c2b7e4864690088ad9f8e7666c042fce43e0fd492e66331025ea1d0'
+            '955764d353284655013a81fcdc2ffef25d07edac6d314e47f8cce0b53c5e41d8'
+            '266fa3e145a1a9af0bc95f1aa753a62d9cbd93814bda9e1455e38ca28e731cda'
+            '9615150dbfc714b0dd35ac47123bf69034733ce7846c0e7a5c105b56484961b5'
+            'b1c143306162466cd84fef53f1c2dd373be0b4d661d12c6b7f7eff2136f4ce26'
+            '1403ea9e9f5d0004892680504958ec28a5ed4599b1681165bebe1a9de6418932')
+noextract=()
+
+# dvb's release key (crates/dvb-engine/src/update/release.pub).
+_minisign_pub='RWTjH9NnSuEaBQuNBtQcKYU0ncGpKL4DyoiuSJV8xcEXuC8DpC9NBvna'
+
+verify() {
+  # The same check install.sh makes: the signature on SHA256SUMS, then the
+  # tarball's checksum against it.
+  minisign -Vm "SHA256SUMS-${pkgver}" -x "SHA256SUMS-${pkgver}.minisig" -P "${_minisign_pub}"
+  grep " dvb-${pkgver}-x86_64-linux.tar.gz\$" "SHA256SUMS-${pkgver}" | sha256sum -c -
+}
+
+package() {
+  local src="${srcdir}/dvb-${pkgver}"
+  local inst="${src}/install"
+
+  # The binary, at the path dvb's units and engine expect (/opt/dvb/current/dvb).
+  install -Dm0755 "${src}/dvb" "${pkgdir}/opt/dvb/versions/${pkgver}/dvb"
+  ln -s "versions/${pkgver}" "${pkgdir}/opt/dvb/current"
+  install -d "${pkgdir}/usr/bin"
+  ln -s /opt/dvb/current/dvb "${pkgdir}/usr/bin/dvb"
+  # What this box is, for `dvb update`: engine and cockpit on one machine.
+  install -Dm0644 /dev/null "${pkgdir}/opt/dvb/role-engine"
+  install -Dm0644 /dev/null "${pkgdir}/opt/dvb/role-cockpit"
+  # Marks a pacman-managed install, so dvb leaves updates to pacman.
+  install -Dm0644 /dev/null "${pkgdir}/opt/dvb/packaged"
+
+  # System units, the run drop-in and the runs' slice.
+  local unit
+  for unit in dvb.service dvb.socket dvb-run.socket \
+      dvb-run-claude@.service dvb-run-codex@.service dvb-run-fake@.service; do
+    install -Dm0644 "${inst}/${unit}" "${pkgdir}/usr/lib/systemd/system/${unit}"
+  done
+  install -Dm0644 "${inst}/dvb-run-.service.d/10-common.conf" \
+    "${pkgdir}/usr/lib/systemd/system/dvb-run-.service.d/10-common.conf"
+  install -Dm0644 "${srcdir}/dvb.slice" "${pkgdir}/usr/lib/systemd/system/dvb.slice"
+
+  # The desk is a user unit; the owner enables it (dvb-setup), pacman does not.
+  install -Dm0644 "${inst}/dvb-desk.service" "${pkgdir}/usr/lib/systemd/user/dvb-desk.service"
+
+  # polkit: user dvb may start, stop and kill run units and set the slice.
+  install -Dm0644 "${inst}/50-dvb.rules" "${pkgdir}/usr/share/polkit-1/rules.d/50-dvb.rules"
+
+  # Users and folders, made by pacman's sysusers and tmpfiles hooks.
+  install -Dm0644 "${srcdir}/dvb.sysusers" "${pkgdir}/usr/lib/sysusers.d/dvb.conf"
+  install -Dm0644 "${srcdir}/dvb.tmpfiles" "${pkgdir}/usr/lib/tmpfiles.d/dvb.conf"
+
+  # The one step that needs the owner's name.
+  install -Dm0755 "${inst}/dvb-setup" "${pkgdir}/usr/lib/dvb/dvb-setup"
+
+  # Desktop entry and icons.
+  install -Dm0644 "${inst}/dvb.desktop" "${pkgdir}/usr/share/applications/dvb.desktop"
+  local size
+  for size in 16 32 48 64 128 256 512; do
+    install -Dm0644 "${inst}/icons/dvb-${size}.png" \
+      "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/dvb.png"
+  done
+  install -Dm0644 "${inst}/icons/dvb.svg" "${pkgdir}/usr/share/icons/hicolor/scalable/apps/dvb.svg"
+
+  install -Dm0644 "${srcdir}/LICENSE-${pkgver}" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

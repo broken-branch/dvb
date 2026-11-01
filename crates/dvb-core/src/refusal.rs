@@ -81,6 +81,11 @@ pub enum RefusalCode {
     /// A project's remove or repoint waited too long for the GitHub mirror
     /// pass and changed nothing; the detail says when the pass started.
     MirrorPassRunning,
+    /// A usage check asks about a vendor dvb has not paused at its limit.
+    VendorNotLimited,
+    /// The vendor has no usage reading that spends nothing; its window only
+    /// arrives with a model reply.
+    NoUsageReading,
 }
 
 impl RefusalCode {
@@ -129,7 +134,9 @@ impl RefusalCode {
             | RefusalCode::GoalOrderCycle
             | RefusalCode::RepositoryMismatch
             | RefusalCode::ProjectBusy { .. }
-            | RefusalCode::MirrorPassRunning => 409,
+            | RefusalCode::MirrorPassRunning
+            | RefusalCode::VendorNotLimited
+            | RefusalCode::NoUsageReading => 409,
         }
     }
 }

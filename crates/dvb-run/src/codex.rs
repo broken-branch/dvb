@@ -14,6 +14,7 @@ use dvb_core::Effort;
 use dvb_core::Timestamp;
 use dvb_core::event::ServedModel;
 use dvb_core::provider::{ExitStatus, Provider, ProviderError, RunItem, Session};
+use dvb_core::run_verbs::RateLimitBody;
 use dvb_core::text::clip;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -225,6 +226,47 @@ fn list_models_with_timeout(
     })?;
     drop(child);
     Ok(ids)
+}
+
+/// One reading of the account's usage window, as a run takes at its start:
+/// `initialize` and `account/rateLimits/read`, with no thread and no turn, so it
+/// spends nothing (a usage check). `None` when the account gives no window.
+pub fn read_window(
+    bin: &Path,
+    home: &Path,
+    cwd: &Path,
+) -> Result<Option<RateLimitBody>, ProviderError> {
+    read_window_with_timeout(bin, home, cwd, STARTUP_TIMEOUT)
+}
+
+fn read_window_with_timeout(
+    bin: &Path,
+    home: &Path,
+    cwd: &Path,
+    timeout: Duration,
+) -> Result<Option<RateLimitBody>, ProviderError> {
+    let (child, mut rpc) = connect(command(bin, home, cwd, cwd))?;
+    let (child, limits) = startup(child, timeout, move || {
+        rpc.initialize()?;
+        rpc.request::<RateLimits>("account/rateLimits/read", &Value::Null)
+    })?;
+    drop(child);
+    Ok(
+        if let Some(RunItem::RateLimit {
+            used_pct,
+            window,
+            resets_at,
+        }) = rate_limit_item(limits.rate_limits)
+        {
+            Some(RateLimitBody {
+                used_pct,
+                window,
+                resets_at,
+            })
+        } else {
+            None
+        },
+    )
 }
 
 #[derive(Deserialize)]
@@ -608,22 +650,27 @@ struct RateLimitWindow {
     resets_at: Option<i64>,
 }
 
-/// The highest-used window of a `RateLimitSnapshot`.
+/// The highest-used window of a `RateLimitSnapshot`; of two full ones, the one
+/// that resets later, which is when the account is open again.
 fn rate_limit_item(snapshot: Option<RateLimitSnapshot>) -> Option<RunItem> {
     let snap = snapshot?;
-    let mut best: Option<(f64, RunItem)> = None;
+    let mut best: Option<(f64, Option<Timestamp>, RunItem)> = None;
     for w in [snap.primary, snap.secondary].into_iter().flatten() {
         let used = w.used_percent;
+        let resets_at = w.resets_at.map(|s| Timestamp(s.saturating_mul(1000)));
         let item = RunItem::RateLimit {
             used_pct: used,
             window: window_name(w.window_duration_mins),
-            resets_at: w.resets_at.map(|s| Timestamp(s.saturating_mul(1000))),
+            resets_at,
         };
-        if best.as_ref().is_none_or(|(u, _)| used > *u) {
-            best = Some((used, item));
+        if best
+            .as_ref()
+            .is_none_or(|(u, r, _)| used > *u || (used >= 100.0 && *u >= 100.0 && resets_at > *r))
+        {
+            best = Some((used, resets_at, item));
         }
     }
-    best.map(|(_, item)| item)
+    best.map(|(_, _, item)| item)
 }
 
 fn window_name(mins: Option<i64>) -> String {
@@ -1230,6 +1277,64 @@ mod tests {
             );
             assert_child_reaped(dir.path());
         }
+    }
+
+    #[test]
+    fn a_window_reading_starts_no_thread_and_takes_the_later_full_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("app-server");
+        let limits = json!({ "id": 2, "result": { "rateLimits": {
+            "primary": { "usedPercent": 100.0, "windowDurationMins": 300, "resetsAt": 1_800_000_000 },
+            "secondary": { "usedPercent": 100.0, "windowDurationMins": 10080, "resetsAt": 1_800_400_000 }
+        } } });
+        // Every line the client sends is kept; a thread or a turn would be a fourth.
+        crate::testutil::write_executable(
+            &stub,
+            &format!(
+                "#!/bin/sh\necho $$ > pid\n\
+                 read line; echo \"$line\" >> sent; printf '%s\\n' '{{\"id\":1,\"result\":{{}}}}'\n\
+                 read line; echo \"$line\" >> sent\n\
+                 read line; echo \"$line\" >> sent; printf '%s\\n' '{limits}'\n\
+                 read line && echo \"$line\" >> sent\n"
+            ),
+        );
+        let reading = read_window(&stub, dir.path(), dir.path()).unwrap();
+        assert_eq!(
+            reading,
+            Some(RateLimitBody {
+                used_pct: 100.0,
+                window: "7d".into(),
+                resets_at: Some(Timestamp(1_800_400_000_000)),
+            })
+        );
+        assert_child_reaped(dir.path());
+        let sent: Vec<String> = std::fs::read_to_string(dir.path().join("sent"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap()["method"].to_string())
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                "\"initialize\"",
+                "\"initialized\"",
+                "\"account/rateLimits/read\""
+            ]
+        );
+    }
+
+    #[test]
+    fn a_window_reading_has_a_deadline_and_reaps_the_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = startup_stub(dir.path(), &[json!({ "id": 1, "result": {} })], true);
+        let err =
+            read_window_with_timeout(&bin, dir.path(), dir.path(), Duration::from_millis(500))
+                .unwrap_err();
+        assert!(
+            matches!(&err, ProviderError::Other(m) if m.contains("startup timed out")),
+            "{err}"
+        );
+        assert_child_reaped(dir.path());
     }
 
     #[test]

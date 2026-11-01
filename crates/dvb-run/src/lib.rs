@@ -9,6 +9,7 @@ mod exec;
 pub mod fake;
 mod login;
 mod preflight;
+mod reading;
 mod stream;
 mod usage;
 mod verb;
@@ -45,6 +46,7 @@ mod testutil {
             fake_script: None,
             dev: true,
             login: false,
+            reading: false,
             cli_bin: None,
             dir: dir.to_owned(),
         }

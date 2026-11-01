@@ -575,7 +575,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "dvb"
-version = "0.1.83"
+version = "0.1.84"
 dependencies = [
  "async-trait",
  "axum",
@@ -586,6 +586,7 @@ dependencies = [
  "dvb-engine",
  "dvb-forge",
  "dvb-run",
+ "dvb-store",
  "fail",
  "serde_json",
  "tempfile",
@@ -594,7 +595,7 @@ dependencies = [
 
 [[package]]
 name = "dvb-cli"
-version = "0.1.83"
+version = "0.1.84"
 dependencies = [
  "axum",
  "bytes",
@@ -617,7 +618,7 @@ dependencies = [
 
 [[package]]
 name = "dvb-core"
-version = "0.1.83"
+version = "0.1.84"
 dependencies = [
  "async-trait",
  "proptest",
@@ -633,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "dvb-desk"
-version = "0.1.83"
+version = "0.1.84"
 dependencies = [
  "axum",
  "dvb-cli",
@@ -653,7 +654,7 @@ dependencies = [
 
 [[package]]
 name = "dvb-engine"
-version = "0.1.83"
+version = "0.1.84"
 dependencies = [
  "async-trait",
  "axum",
@@ -689,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "dvb-forge"
-version = "0.1.83"
+version = "0.1.84"
 dependencies = [
  "async-trait",
  "bytes",
@@ -712,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "dvb-run"
-version = "0.1.83"
+version = "0.1.84"
 dependencies = [
  "axum",
  "dvb-cli",
@@ -727,7 +728,7 @@ dependencies = [
 
 [[package]]
 name = "dvb-store"
-version = "0.1.83"
+version = "0.1.84"
 dependencies = [
  "dvb-core",
  "refinery",

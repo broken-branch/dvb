@@ -5,6 +5,9 @@ import { Heading, Status, Meter, ChoiceSelect, InfoTip } from '@/components/dvb/
 import { DataError, useRead } from '@/components/dvb/data-feedback';
 import { ProjectLabel } from '@/components/dvb/project-identity';
 import { useStore } from '@/lib/store';
+import { Button } from '@/components/ui/button';
+import { refusalText } from '@/lib/data/display';
+import type { Vendor } from '@/lib/data/types';
 const equivalentInfo =
   "What these tokens would cost at the vendor's published API prices. For comparison only; your subscriptions are not charged this.";
 const averageInfo =
@@ -23,8 +26,17 @@ function UsageCost({ label, info, value }: { label: string; info: string; value:
   );
 }
 
+/**
+ * A check-again on a paused vendor: running, or its result sentence and whether
+ * the sentence is about a paused window (still limited, or refused) or not.
+ */
+type Check = { busy: true } | { busy: false; text: string; refused: boolean; limited: boolean };
+
 export function Usage() {
-  const { data: s } = useStore(),
+  const { data: s, canWrite } = useStore(),
+    // Kept here so a result outlives the reread its vendor.resumed or vendor.limited causes.
+    // A result shows only while it agrees with its window, and a reread drops one that no longer does.
+    [checks, setChecks] = useState<Partial<Record<Vendor, Check>>>({}),
     [project, setProject] = useState('all'),
     [since, setSince] = useState('all'),
     [today] = useState(() => String(new Date().setHours(0, 0, 0, 0)));
@@ -37,6 +49,46 @@ export function Usage() {
       }),
     [s.usage, project, since, s.usageVersion],
   );
+  const windows = usage.value?.windows,
+    [readWindows, setReadWindows] = useState(windows);
+  if (windows !== readWindows) {
+    setReadWindows(windows);
+    if (windows)
+      setChecks((c) => {
+        const kept = Object.entries(c).filter(
+          ([vendor, check]) =>
+            check.busy || windows.some((w) => w.vendor === vendor && w.limited === check.limited),
+        );
+        return kept.length === Object.keys(c).length ? c : Object.fromEntries(kept);
+      });
+  }
+  async function checkAgain(vendor: Vendor) {
+    setChecks((c) => ({ ...c, [vendor]: { busy: true } }));
+    let done: Check;
+    try {
+      const result = await s.checkUsage(vendor);
+      done = result.ok
+        ? {
+            busy: false,
+            refused: false,
+            limited: result.value.limited,
+            text: !result.value.limited
+              ? 'Running again: the usage limit has lifted.'
+              : result.value.resets_at
+                ? `Still limited until ${new Date(result.value.resets_at).toLocaleString()}.`
+                : 'Still limited.',
+          }
+        : { busy: false, refused: true, limited: true, text: refusalText(result.refusal) };
+    } catch (e) {
+      done = {
+        busy: false,
+        refused: true,
+        limited: true,
+        text: e instanceof Error ? e.message : 'Unable to connect. Try again.',
+      };
+    }
+    setChecks((c) => ({ ...c, [vendor]: done }));
+  }
   return (
     <>
       <Heading title="Usage & models" description="Usage reported by your subscriptions.">
@@ -78,6 +130,17 @@ export function Usage() {
                 </div>
                 <Meter value={w.used_pct} label={`${w.vendor} ${w.window}`} />
                 {w.resets_at && <p>Resets {new Date(w.resets_at).toLocaleString()}</p>}
+                {w.limited && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={checks[w.vendor]?.busy || !canWrite}
+                    onClick={() => void checkAgain(w.vendor)}
+                  >
+                    {checks[w.vendor]?.busy ? 'Checking…' : 'Check again'}
+                  </Button>
+                )}
+                <CheckResult check={checks[w.vendor]} limited={w.limited} />
               </Card>
             ))}
           </div>
@@ -132,6 +195,17 @@ export function Usage() {
         </>
       )}
     </>
+  );
+}
+
+function CheckResult({ check, limited }: { check?: Check; limited: boolean }) {
+  if (!check || check.busy || check.limited !== limited) return null;
+  return check.refused ? (
+    <p role="alert" className="warning-text">
+      {check.text}
+    </p>
+  ) : (
+    <p role="status">{check.text}</p>
   );
 }
 

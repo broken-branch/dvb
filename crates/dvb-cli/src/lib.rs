@@ -222,7 +222,13 @@ pub enum Verb {
     /// link to open and, for Claude, takes the code the page shows.
     Login { vendor: Vendor },
     /// Tokens, estimated cost and each vendor's usage window.
-    Usage { project: Option<String> },
+    Usage {
+        project: Option<String>,
+        /// Read a paused vendor's usage window again (after an early reset or a
+        /// top-up) and say whether it resumed.
+        #[arg(long, value_name = "VENDOR", conflicts_with = "project")]
+        check: Option<Vendor>,
+    },
     /// Check GitHub for a newer release; without `--check`, install it.
     /// Packaged installs update through the package manager.
     Update {
@@ -1515,7 +1521,19 @@ async fn run(target: &Target, client: &Client, verb: Verb) -> Result<i32, CliErr
             ))?;
         }
         Verb::Login { vendor } => login(client, vendor).await?,
-        Verb::Usage { project } => usage(client, project).await?,
+        Verb::Usage {
+            check: Some(vendor),
+            ..
+        } => {
+            let w: dvb_core::api::VendorWindow = client
+                .post(&format!("/usage/{}/check", vendor.as_str()), &())
+                .await?;
+            write_stdout(format_args!("{}\n", format_check(&w)))?;
+        }
+        Verb::Usage {
+            project,
+            check: None,
+        } => usage(client, project).await?,
         Verb::Keybind { keys, file } => {
             let file = match file {
                 Some(f) => f,
@@ -1702,6 +1720,16 @@ pub fn format_usage(u: &Usage) -> String {
         ));
     }
     out
+}
+
+/// A usage check's result in one line: resumed, or still limited until when.
+pub fn format_check(w: &dvb_core::api::VendorWindow) -> String {
+    let vendor = w.vendor.as_str();
+    match (w.limited, w.resets_at) {
+        (false, _) => format!("{vendor}: resumed; its waiting runs start now"),
+        (true, Some(t)) => format!("{vendor}: still limited until {}", local_time(t)),
+        (true, None) => format!("{vendor}: still limited; it gave no reset time"),
+    }
 }
 
 pub const DEFAULT_KEYS: &str = "SUPER + ALT + D";
@@ -2843,6 +2871,34 @@ mod tests {
                 windows: vec![]
             }),
             "No usage yet.\n"
+        );
+    }
+
+    #[test]
+    fn a_usage_check_is_one_line_resumed_or_limited_until_a_local_time() {
+        let mut w = VendorWindow {
+            vendor: Vendor::Codex,
+            used_pct: 4.0,
+            window: "7d".into(),
+            resets_at: Some(Timestamp(1_791_046_706_000)),
+            limited: false,
+        };
+        assert_eq!(
+            format_check(&w),
+            "codex: resumed; its waiting runs start now"
+        );
+        w.limited = true;
+        assert_eq!(
+            format_check(&w),
+            format!(
+                "codex: still limited until {}",
+                local_time(Timestamp(1_791_046_706_000))
+            )
+        );
+        w.resets_at = None;
+        assert_eq!(
+            format_check(&w),
+            "codex: still limited; it gave no reset time"
         );
     }
 

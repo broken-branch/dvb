@@ -1,6 +1,6 @@
 import { event, page } from '../support/rows';
 import { json } from '../support/api';
-import type { Usage as EngineUsage } from '@/lib/data/types';
+import type { DataStore, Usage as EngineUsage } from '@/lib/data/types';
 import { it, expect, vi, describe } from 'vitest';
 import { screen, waitFor, within, act } from '@testing-library/react';
 import { mount } from '../support/render';
@@ -160,5 +160,112 @@ describe('refresh', () => {
     expect(live.getSnapshot().usageVersion).toBe(202);
     unmount();
     streams[1].close();
+  });
+});
+describe('check again', () => {
+  const windows: EngineUsage['windows'] = [
+    { vendor: 'claude', window: '5-hour', used_pct: 40, limited: false },
+    { vendor: 'codex', window: 'weekly', used_pct: 100, limited: true, resets_at: 1793802600000 },
+  ];
+  function paused(checkUsage: DataStore['checkUsage']) {
+    let current = windows;
+    const source = createFixtureSource();
+    source.set({
+      usage: async () => ({ ok: true, value: { rows: [], windows: current } }),
+      checkUsage,
+    });
+    // Stands in for the reread a vendor.limited or vendor.resumed event causes.
+    const reread = async (codex: Partial<EngineUsage['windows'][number]>) => {
+      act(() => {
+        current = [windows[0], { ...windows[1], ...codex }];
+        source.set({ usageVersion: source.getSnapshot().usageVersion + 1 });
+      });
+      await screen.findByRole('heading', { name: 'codex' });
+    };
+    return { ...mount(<Usage />, source), reread };
+  }
+  const card = (vendor: string) =>
+    screen.getByRole('heading', { name: vendor }).closest('.usage-window') as HTMLElement;
+
+  it('shows one button, on the paused row only', async () => {
+    paused(async () => ({ ok: true, value: windows[1] }));
+    await screen.findByRole('heading', { name: 'codex' });
+    expect(screen.getAllByRole('button', { name: 'Check again' })).toHaveLength(1);
+    expect(within(card('codex')).getByRole('button', { name: 'Check again' })).toBeInTheDocument();
+    expect(within(card('claude')).queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it('shows it is checking, takes one press, then says the vendor is running again', async () => {
+    let reply!: () => void;
+    const checkUsage = vi.fn(
+      () =>
+        new Promise<{ ok: true; value: EngineUsage['windows'][number] }>((resolve) => {
+          reply = () =>
+            resolve({ ok: true, value: { ...windows[1], used_pct: 3, limited: false } });
+        }),
+    );
+    const { user, reread } = paused(checkUsage);
+    await user.click(await screen.findByRole('button', { name: 'Check again' }));
+    const checking = within(card('codex')).getByRole('button', { name: 'Checking…' });
+    expect(checking).toBeDisabled();
+    await user.click(checking);
+    expect(checkUsage).toHaveBeenCalledTimes(1);
+    expect(checkUsage).toHaveBeenCalledWith('codex');
+    await act(async () => reply());
+    await reread({ used_pct: 3, limited: false });
+    expect(await within(card('codex')).findByRole('status')).toHaveTextContent(
+      'Running again: the usage limit has lifted.',
+    );
+    expect(within(card('codex')).getByText('Available')).toBeInTheDocument();
+  });
+
+  it('says the vendor is still limited until the reset time the reply gives', async () => {
+    const resets = 1794000000000;
+    const { user } = paused(async () => ({
+      ok: true,
+      value: { ...windows[1], resets_at: resets },
+    }));
+    await user.click(await screen.findByRole('button', { name: 'Check again' }));
+    expect(await within(card('codex')).findByRole('status')).toHaveTextContent(
+      `Still limited until ${new Date(resets).toLocaleString()}.`,
+    );
+    expect(within(card('codex')).getByRole('button', { name: 'Check again' })).toBeEnabled();
+  });
+
+  it('drops a result once a reread changes whether the vendor is paused', async () => {
+    let limited = true;
+    const { user, reread } = paused(async () => ({
+      ok: true,
+      value: { ...windows[1], limited, resets_at: 1794000000000 },
+    }));
+    await user.click(await screen.findByRole('button', { name: 'Check again' }));
+    expect(await within(card('codex')).findByRole('status')).toHaveTextContent('Still limited');
+    await reread({ used_pct: 0, limited: false, resets_at: undefined });
+    expect(await within(card('codex')).findByText('Available')).toBeInTheDocument();
+    expect(within(card('codex')).queryByRole('status')).not.toBeInTheDocument();
+    await reread({ limited: true });
+    expect(await within(card('codex')).findByText('Usage paused')).toBeInTheDocument();
+    expect(within(card('codex')).queryByRole('status')).not.toBeInTheDocument();
+
+    limited = false;
+    await user.click(screen.getByRole('button', { name: 'Check again' }));
+    await reread({ used_pct: 3, limited: false });
+    expect(await within(card('codex')).findByRole('status')).toHaveTextContent('Running again');
+    await reread({ limited: true });
+    expect(await within(card('codex')).findByText('Usage paused')).toBeInTheDocument();
+    expect(within(card('codex')).queryByRole('status')).not.toBeInTheDocument();
+    await reread({ limited: false });
+    expect(await within(card('codex')).findByText('Available')).toBeInTheDocument();
+    expect(within(card('codex')).queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('shows a refusal sentence on the row', async () => {
+    const detail = 'codex gave no usage reading within 45 seconds';
+    const { user } = paused(async () => ({
+      ok: false,
+      refusal: { code: 'NO_USAGE_READING', detail },
+    }));
+    await user.click(await screen.findByRole('button', { name: 'Check again' }));
+    expect(await within(card('codex')).findByRole('alert')).toHaveTextContent(detail);
   });
 });

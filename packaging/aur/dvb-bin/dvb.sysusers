@@ -1,0 +1,6 @@
+# dvb runs the engine; dvb-worker runs each task's unit. Each 'u' line also
+# makes a group of the same name. dvb joins group dvb-worker so it can read
+# what runs write (as install.sh sets up). Shell defaults to nologin.
+u dvb-worker - "dvb runs"   /nonexistent
+u dvb        - "dvb engine" /nonexistent
+m dvb dvb-worker

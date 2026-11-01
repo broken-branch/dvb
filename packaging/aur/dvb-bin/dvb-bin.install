@@ -1,0 +1,34 @@
+post_install() {
+  cat <<'MSG'
+dvb is installed but not running yet. Turn it on for your account with:
+  sudo /usr/lib/dvb/dvb-setup
+For another owner: sudo /usr/lib/dvb/dvb-setup --owner <user>
+Then open the cockpit with: dvb app
+MSG
+}
+
+post_upgrade() {
+  # Pick up the new binary in the running engine and the owner's desk.
+  if systemctl is-active --quiet dvb.service 2>/dev/null; then
+    systemctl daemon-reload
+    systemctl try-restart dvb.service
+    echo "dvb: engine restarted on ${1%-*}. Restart the cockpit with: systemctl --user restart dvb-desk.service"
+  fi
+}
+
+pre_remove() {
+  systemctl disable --now dvb.service dvb.socket dvb-run.socket 2>/dev/null || true
+  systemctl --global disable dvb-desk.service 2>/dev/null || true
+  # The owner's desk and any run would go on with the deleted binary.
+  local name
+  name=$(getent passwd "$(cat /var/lib/dvb/state/owner 2>/dev/null)" | cut -d: -f1) || true
+  [ -z "$name" ] || systemctl --user -M "$name@" stop dvb-desk.service 2>/dev/null || true
+  systemctl stop dvb.slice 2>/dev/null || true
+}
+
+post_remove() {
+  cat <<'MSG'
+dvb's data stays in /var/lib/dvb, and the users dvb and dvb-worker stay.
+To remove them too, follow "Remove dvb" in dvb's docs/install.md.
+MSG
+}

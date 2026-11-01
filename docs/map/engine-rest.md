@@ -16,10 +16,15 @@ Paths below are under `crates/dvb-engine/src/`.
 - `api/roles.rs`, `hires.rs`, `models.rs`, `settings.rs`, `only.rs`: team, preferences and
   timed model selection; `runs_memory.rs` reads and sets the runs' slice limit.
 - `api/history.rs`: shared history folds, restores and stale-edit checks.
-- `api/github.rs`, `logins.rs`: forge setup and worker subscription logins.
+- `api/github.rs`, `logins.rs`: forge setup and worker subscription logins;
+  `logins::start_unrecorded` starts a login or usage reading run in a vendor's
+  unit without recording a run.
 - `api/events.rs`, `feed.rs`: bounded history reads and replay/live event streams.
 - `api/runs.rs`, `status.rs`, `usage.rs`, `report.rs`, `update.rs`: run evidence,
   status counts and warnings, usage, bug and feature report links, and updates.
+  `usage::check_usage` (`POST /usage/{vendor}/check`) starts a usage reading run
+  with `logins::start_unrecorded` (its result in `reading.json`), and applies the
+  reading with `vendors::check`.
 - `owner.rs`: pause, redirect, drop, goal ordering and parked plans.
 - `run_api/orchestrator/`: the orchestrator/lead role check; `planning.rs` plans and goal
   binding, `tasks.rs` task start/stop/retry, `questions.rs` asks and autonomy,
@@ -36,7 +41,8 @@ Paths below are under `crates/dvb-engine/src/`.
   the mirror lock per project and goal job; `mirror::lock_for_change` is how a
   project's remove or repoint waits for that job, and `/status` shows the
   running pass.
-- `vendors.rs`, `only.rs`, `usage/`: vendor limits, timed selection and accounting.
+- `vendors.rs`, `only.rs`, `usage/`: vendor limits and usage checks, timed selection
+  and accounting.
 - `units.rs`: systemd D-Bus unit control and the dev process launcher.
 - `update/`: signed downloads, bounded drain/handover, update-stop recovery receipts,
   backups, rollback and local updates. Dispatch resumes marked update stops once.

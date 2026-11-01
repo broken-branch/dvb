@@ -1063,6 +1063,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/usage/{vendor}/check': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * `POST /usage/{vendor}/check`: one fresh reading of a paused vendor's window
+     *     (`vendors::check`), for when the account reset early or was topped up.
+     */
+    post: operations['check_usage'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/version': {
     parameters: {
       query?: never;
@@ -2751,6 +2771,14 @@ export interface components {
       | {
           /** @enum {string} */
           code: 'MIRROR_PASS_RUNNING';
+        }
+      | {
+          /** @enum {string} */
+          code: 'VENDOR_NOT_LIMITED';
+        }
+      | {
+          /** @enum {string} */
+          code: 'NO_USAGE_READING';
         };
     /** @description A refused command (`command.refused`). */
     RefusedCommand: components['schemas']['RecordedRefusal'] & {
@@ -6703,6 +6731,55 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['Usage'];
+        };
+      };
+      /** @description Refused, with a code */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['Refusal'];
+        };
+      };
+      /** @description Refused, with a code */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['Refusal'];
+        };
+      };
+      /** @description Refused, with a code */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['Refusal'];
+        };
+      };
+    };
+  };
+  check_usage: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        vendor: components['schemas']['Vendor'];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The vendor's window from the fresh reading: not `limited` when the pause ended, else the reset time the pause now holds until */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['VendorWindow'];
         };
       };
       /** @description Refused, with a code */

@@ -5,7 +5,7 @@
 //! stay in the engine's memory and are rebuilt from the log at startup.
 
 use dvb_core::{Actor, Event, EventId, EventKind, Evidence, ProjectId, RunId, Timestamp};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -97,12 +97,16 @@ impl Store {
     /// Opens an existing database without applying migrations, to append to its
     /// log (the `events` table is the same in every schema). The update recovery
     /// uses it after restoring a snapshot: the binary doing the restore may be
-    /// newer than the schema it restored.
+    /// newer than the schema it restored. A missing file is an error, not a new
+    /// empty database.
     pub fn open_unmigrated(path: &Path) -> Result<Self, StoreError> {
+        let flags = OpenFlags::default().difference(OpenFlags::SQLITE_OPEN_CREATE);
         Ok(Self {
-            conn: Mutex::new(Connection::open(path).map_err(|source| StoreError::Open {
-                path: path.into(),
-                source,
+            conn: Mutex::new(Connection::open_with_flags(path, flags).map_err(|source| {
+                StoreError::Open {
+                    path: path.into(),
+                    source,
+                }
             })?),
             read_cache: Mutex::default(),
         })

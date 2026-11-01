@@ -39,12 +39,14 @@ fi
 
 if [ "$engine" = 1 ]; then
   # Installing over a running install (the way to move to a release that cannot
-  # update itself): stop the engine, keep a copy of its database first.
+  # update itself): stop the engine, keep a copy of its database first. The copy
+  # goes through SQLite, as committed events can still be in dvb.sqlite-wal.
   if [ -f /var/lib/dvb/state/dvb.sqlite ]; then
-    systemctl stop dvb.service 2>/dev/null || true
+    systemctl stop dvb.service || die "could not stop dvb.service; nothing was changed"
     install -d -m 0700 -o dvb -g dvb /var/lib/dvb/state/backups
-    install -m 0600 -o dvb -g dvb /var/lib/dvb/state/dvb.sqlite \
-      "/var/lib/dvb/state/backups/pre-install-$(date -u +%Y%m%dT%H%M%SZ).sqlite"
+    backup="/var/lib/dvb/state/backups/pre-install-$(date -u +%Y%m%dT%H%M%SZ).sqlite"
+    runuser -u dvb -- /opt/dvb/current/dvb store-snapshot /var/lib/dvb/state/dvb.sqlite "$backup" \
+      || die "could not back up the database to $backup; nothing else was changed"
   fi
   id -u "$owner" > /var/lib/dvb/state/owner
   chown dvb:dvb /var/lib/dvb/state/owner

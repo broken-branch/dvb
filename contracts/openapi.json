@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "0.1.83"
+    "version": "0.1.84"
   },
   "paths": {
     "/events": {
@@ -4301,6 +4301,67 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Usage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Refused, with a code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Refused, with a code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Refused, with a code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/usage/{vendor}/check": {
+      "post": {
+        "tags": [
+          "usage"
+        ],
+        "summary": "`POST /usage/{vendor}/check`: one fresh reading of a paused vendor's window\n(`vendors::check`), for when the account reset early or was topped up.",
+        "operationId": "check_usage",
+        "parameters": [
+          {
+            "name": "vendor",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Vendor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The vendor's window from the fresh reading: not `limited` when the pause ended, else the reset time the pause now holds until",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VendorWindow"
                 }
               }
             }
@@ -9909,6 +9970,36 @@
                 "type": "string",
                 "enum": [
                   "MIRROR_PASS_RUNNING"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A usage check asks about a vendor dvb has not paused at its limit.",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "VENDOR_NOT_LIMITED"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The vendor has no usage reading that spends nothing; its window only\narrives with a model reply.",
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "NO_USAGE_READING"
                 ]
               }
             }

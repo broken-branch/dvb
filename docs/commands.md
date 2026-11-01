@@ -566,7 +566,8 @@ A limited vendor waits; usage fallback stays within the listed models. A run
 waiting for a usage limit shows `Waiting for a usage limit` as its task's
 `reason`, with the reset time in its notice. A vendor pause survives an engine
 restart until its reset time; `dvb usage` and the cockpit show it as a full
-`usage` window with that reset. Task and feed evidence show hired and actual
+`usage` window with that reset. After an early reset or a top-up,
+`dvb usage --check <vendor>` reads a paused Codex window again. Task and feed evidence show hired and actual
 models, including same-vendor switched or fallback reviews. The restriction survives restart. Expiry returns new runs to
 their hires, including after downtime. Global and project status show an active
 restriction and its local end time.
@@ -690,6 +691,7 @@ refuses the scan.
 | `dvb redirect <goal> <text>` | Change course: the goal's unstarted tasks are dropped and the orchestrator plans the new text, then asks for your yes. |
 | `dvb brief <project> [<text>\|--clear]` | Show, set or remove the project's brief: kept only in dvb, it goes into the orchestrator's and every builder's prompt and is never sent to GitHub. |
 | `dvb usage [<project>]` | Tokens, estimated cost and each vendor's usage window. |
+| `dvb usage --check <vendor>` | Read a paused vendor's usage window again, for an account that reset early or was topped up. Prints one line: `<vendor>: resumed; its waiting runs start now` (the pause ends and its waiting runs launch), or `<vendor>: still limited until <time>` (the pause holds until the reset time the reading gave, recorded again as `vendor.limited`). The reading is the one a run takes at its start, made as the worker in the vendor's unit, with no model turn, so it spends no usage. A vendor that is not paused is refused (`VENDOR_NOT_LIMITED`); Claude can only be read with a model reply, so a Claude pause lasts until its reset time (`NO_USAGE_READING`). API: `POST /usage/{vendor}/check`. |
 | `dvb report bug\|feature --title <title> <text>` | Prepare a bug report or feature request: prints the issue and the GitHub link that opens it. Nothing is filed. |
 | `dvb keybind [--keys <keys>] [--file <file>]` | Add one Hyprland keybinding that opens the app (default `SUPER + ALT + D` in `~/.config/hypr/bindings.lua`). |
 | `dvb login claude\|codex` | Log a vendor's CLI in as the worker user: prints the link to open and, for Claude, takes the code the page shows. |

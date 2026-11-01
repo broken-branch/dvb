@@ -1,7 +1,7 @@
 //! Removing a project from this install: its event, then its files on this machine.
 
 use crate::AppState;
-use crate::engine::Fail;
+use crate::engine::{Engine, Fail};
 use crate::proj::Projections;
 use axum::Json;
 use axum::extract::{Path, State};
@@ -45,6 +45,7 @@ pub async fn remove_project(
     // The mirror job running now finishes before the receipts go.
     let mirror = crate::publish::mirror::lock_for_change(&e, &id, "project.remove").await?;
     let mut runs = Vec::new();
+    let mut removing = None;
     e.append_checked(Some(&id), Actor::Owner, |proj, _| {
         if !proj.projects.contains_key(&id) {
             return Err(Refusal::new(
@@ -62,6 +63,9 @@ pub async fn remove_project(
             .filter(|r| r.project == id)
             .map(|r| r.assignment.run.clone())
             .collect();
+        // Marked under the writer lock, so an add that sees the name freed also
+        // sees it marked.
+        removing = Some(Removing::new(&e, &project.name));
         Ok(vec![EventKind::ProjectRemoved {
             name: project.name.clone(),
             repo: project.repo.clone(),
@@ -96,7 +100,32 @@ pub async fn remove_project(
     .await
     .map_err(Fail::internal)?;
     not_freed.extend(dirs);
+    drop(removing);
     Ok(Json(ProjectRemoval { project, not_freed }))
+}
+
+/// A removed project's name, kept from a new add until its mirror is freed or
+/// the removal is dropped.
+struct Removing<'a>(&'a Engine, String);
+
+impl<'a> Removing<'a> {
+    fn new(e: &'a Engine, name: &str) -> Self {
+        e.removing
+            .lock()
+            .unwrap_or_else(dvb_core::sync::recover)
+            .insert(name.into());
+        Self(e, name.into())
+    }
+}
+
+impl Drop for Removing<'_> {
+    fn drop(&mut self) {
+        self.0
+            .removing
+            .lock()
+            .unwrap_or_else(dvb_core::sync::recover)
+            .remove(&self.1);
+    }
 }
 
 /// Why the project cannot be removed yet: each task that is running or open,

@@ -1,0 +1,9 @@
+# dvb runs share half the machine's memory, as install.sh sets it (it writes
+# a fixed size from MemTotal; a percentage follows the machine). An admin's
+# /etc/systemd/system/dvb.slice, like the one install.sh writes, overrides this.
+[Unit]
+Description=dvb runs
+
+[Slice]
+MemoryMax=50%
+MemoryHigh=44%

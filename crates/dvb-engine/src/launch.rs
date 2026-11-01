@@ -26,7 +26,8 @@ pub(crate) const REVIEWER_SCRIPT: &str = include_str!("fake_scripts/reviewer.jso
 
 /// The Fake provider's script for a kind of run. In dev mode a test may put its
 /// own at `<dir>/fake/<name>.json` (`builder`, `builder-resume`, `reviewer`,
-/// `orchestrator-goal`, `orchestrator-approved`, `orchestrator-answer`, `orchestrator-done`).
+/// `orchestrator-goal`, `orchestrator-approved`, `orchestrator-answer`, `orchestrator-done`,
+/// and `usage` for a usage check's reading).
 /// The Fake forge reads a repo's issues from `<dir>/fake/issues/<repo-name>.json`.
 pub(crate) fn fake_script(e: &AppState, name: &str, default: &str) -> String {
     let own = e

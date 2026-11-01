@@ -17,6 +17,7 @@ dvb-cli = { version = "0.1.0", path = "../dvb-cli" }
 dvb-desk = { version = "0.1.0", path = "../dvb-desk" }
 dvb-engine = { version = "0.1.0", path = "../dvb-engine" }
 dvb-run = { version = "0.1.0", path = "../dvb-run" }
+dvb-store = { version = "0.1.0", path = "../dvb-store" }
 tokio = { version = "1.53.3", features = ["rt-multi-thread"] }
 
 [dev-dependencies]

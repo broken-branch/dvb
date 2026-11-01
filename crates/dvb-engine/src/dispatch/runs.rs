@@ -1172,15 +1172,16 @@ pub(crate) fn sweep_run_dirs(e: &AppState) {
         for run in ended {
             drop_build_output(&work.join(run.as_str()));
         }
-        for dir in ended_logins(&work, &runs) {
-            remove_dir(&dir, "login run directory");
+        for dir in ended_unrecorded(&work, &runs) {
+            remove_dir(&dir, "login or usage reading run directory");
         }
     });
 }
 
-/// The directories of login runs (`api::logins`) that wrote their result: no
-/// run is recorded for them, and once the result is there nothing reads them.
-fn ended_logins(
+/// The directories of login runs (`api::logins`) and usage reading runs
+/// (`api::usage`) that wrote their result: no run is recorded for them, and once
+/// the result is there nothing reads them.
+fn ended_unrecorded(
     work: &std::path::Path,
     runs: &std::collections::BTreeSet<RunId>,
 ) -> Vec<std::path::PathBuf> {
@@ -1200,8 +1201,11 @@ fn ended_logins(
         })
         .map(|entry| entry.path())
         .filter(|dir| {
-            launch::read_run_file(&dir.join("env")).is_ok_and(|env| env.contains("DVB_LOGIN=1\n"))
-                && launch::read_run_file(&dir.join("login-result")).is_ok()
+            let ended = |kind: &str, result: &str| {
+                launch::read_run_file(&dir.join("env")).is_ok_and(|env| env.contains(kind))
+                    && launch::read_run_file(&dir.join(result)).is_ok()
+            };
+            ended("DVB_LOGIN=1\n", "login-result") || ended("DVB_USAGE_READING=1\n", "reading.json")
         })
         .collect()
 }

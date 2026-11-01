@@ -1,0 +1,14 @@
+# dvb's folders, with the modes install.sh gives them. 'v' makes a btrfs
+# subvolume where /var/lib is btrfs (keeps dvb's data out of snapshots),
+# otherwise a plain folder.
+v /var/lib/dvb                 0755 root       root       -
+d /var/lib/dvb/state           0700 dvb        dvb        -
+d /var/lib/dvb/state/backups   0700 dvb        dvb        -
+d /var/lib/dvb/mirrors         2750 dvb        dvb-worker -
+d /var/lib/dvb/work            2770 dvb        dvb-worker -
+d /var/lib/dvb/mirrors/.cache  2770 dvb-worker dvb-worker -
+d /var/lib/dvb/logins          0710 dvb-worker dvb        -
+d /var/lib/dvb/logins/claude   0710 dvb-worker dvb        -
+d /var/lib/dvb/logins/codex    0710 dvb-worker dvb        -
+# The unit set this package ships (the engine's launch::UNITS_VERSION).
+f+ /var/lib/dvb/state/units-version 0644 root root - 2

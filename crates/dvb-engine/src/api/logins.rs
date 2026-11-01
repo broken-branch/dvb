@@ -14,7 +14,7 @@ use dvb_core::api::{LoginCode, LoginStarted, LoginStatus, Logins};
 use dvb_core::io::write_handoff;
 use dvb_core::launcher::{UnitId, UnitState};
 use dvb_core::{RunId, Vendor};
-use std::path::Path as FsPath;
+use std::path::{Path as FsPath, PathBuf};
 use std::time::Duration;
 
 /// How long the first call waits for the login command's URL.
@@ -95,7 +95,7 @@ pub async fn start_login(
 }
 
 /// Reads `path` once it exists, looking every 100 ms for at most `limit`.
-async fn poll(path: &FsPath, limit: Duration) -> Option<String> {
+pub(super) async fn poll(path: &FsPath, limit: Duration) -> Option<String> {
     for _ in 0..=(limit.as_millis() / 100) {
         if let Ok(s) = crate::launch::read_run_file(path) {
             return Some(s);
@@ -105,10 +105,18 @@ async fn poll(path: &FsPath, limit: Duration) -> Option<String> {
     None
 }
 
-async fn begin(e: &AppState, vendor: Vendor) -> Result<LoginStarted, Fail> {
-    // Serialize replacement and start so two callers cannot leave both running.
-    let starting = e.login_starting.lock().await;
-    stop_older(e, vendor).await?;
+/// Starts a run in the vendor's unit that is not recorded as a run: a login run
+/// or a usage reading (`api::usage`). `mode` is the variable that selects it in
+/// `dvb-run` and `label` stands for the model; `extra` adds variables for files
+/// it writes in the run directory first. `dispatch::runs` sweeps these
+/// directories by `mode`.
+pub(super) async fn start_unrecorded(
+    e: &AppState,
+    vendor: Vendor,
+    mode: &'static str,
+    label: &str,
+    extra: impl FnOnce(&FsPath) -> Result<Vec<(&'static str, String)>, Fail>,
+) -> Result<(RunId, PathBuf), Fail> {
     let run = RunId::new(e.new_id());
     let dir = e.cfg.paths.work.join(run.as_str());
     let io = |what: &str| {
@@ -117,11 +125,11 @@ async fn begin(e: &AppState, vendor: Vendor) -> Result<LoginStarted, Fail> {
     };
     crate::launch::create_shared_dir(&dir).map_err(io("run directory"))?;
     crate::units::mount_target(&dir, vendor).map_err(io("login mount target"))?;
-    let env = [
+    let mut env = vec![
         ("DVB_RUN_ID", run.to_string()),
-        ("DVB_LOGIN", "1".to_owned()),
+        (mode, "1".to_owned()),
         ("DVB_VENDOR", vendor.as_str().to_owned()),
-        ("DVB_MODEL", "login".to_owned()),
+        ("DVB_MODEL", label.to_owned()),
         ("DVB_EFFORT", "medium".to_owned()),
         ("DVB_BASE", String::new()),
         ("DVB_MIRROR", String::new()),
@@ -130,11 +138,20 @@ async fn begin(e: &AppState, vendor: Vendor) -> Result<LoginStarted, Fail> {
             e.cfg.paths.run_sock.to_string_lossy().into_owned(),
         ),
     ];
+    env.extend(extra(&dir)?);
     let text: String = env.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
     crate::launch::write_run_file(&dir.join("env"), text).map_err(io("env"))?;
     e.start_unit(vendor, &run)
         .await
-        .map_err(|err| Fail::context("starting the login run", err))?;
+        .map_err(|err| Fail::context(format!("starting the {label} run"), err))?;
+    Ok((run, dir))
+}
+
+async fn begin(e: &AppState, vendor: Vendor) -> Result<LoginStarted, Fail> {
+    // Serialize replacement and start so two callers cannot leave both running.
+    let starting = e.login_starting.lock().await;
+    stop_older(e, vendor).await?;
+    let (run, dir) = start_unrecorded(e, vendor, "DVB_LOGIN", "login", |_| Ok(Vec::new())).await?;
     drop(starting);
 
     let Some(started) = poll(&dir.join("login.json"), URL_WAIT).await else {
