@@ -319,6 +319,8 @@ pub struct Engine {
     feed: broadcast::Sender<Event>,
     /// Each task's lock: an effect is checked, sent and recorded under it.
     locks: KeyedLocks<TaskId>,
+    /// Owner stops reserve their attempt before recording Stop wakes dispatch.
+    pub(crate) stopping: KeyedLocks<TaskId>,
     pub(crate) starting: tokio::sync::Mutex<()>,
     /// Owner CI choices serialize with check observations and final merge effects.
     project_checks: KeyedLocks<ProjectId>,
@@ -496,6 +498,7 @@ impl Engine {
             proj: Mutex::new(projections),
             feed,
             locks: KeyedLocks::default(),
+            stopping: KeyedLocks::default(),
             starting: tokio::sync::Mutex::new(()),
             project_checks: KeyedLocks::default(),
             mirror_fetches: KeyedLocks::default(),

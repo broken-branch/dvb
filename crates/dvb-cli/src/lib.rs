@@ -2137,6 +2137,8 @@ fn task_json(t: &TaskView, roles: &[RoleRecord]) -> Result<serde_json::Value, Cl
         "pr": t.pr,
         "reason": t.reason.as_deref().or_else(|| failure(&t.state)),
         "waiting_for": t.waiting_for,
+        "routine": t.routine,
+        "round_model": t.round_model,
     }))
 }
 
@@ -2186,6 +2188,7 @@ fn question_json(q: &QuestionView) -> serde_json::Value {
         "task": q.task,
         "subject": q.subject,
         "recommended": q.recommended,
+        "plan": q.plan,
         "options": q.options.iter().map(option_json).collect::<Vec<_>>(),
     })
 }
@@ -2329,6 +2332,21 @@ mod tests {
     use super::*;
     use dvb_core::api::{CommitIdentity, UsageRow, VendorWindow};
     use dvb_core::{ProjectId, RoleId, Timestamp, Vendor};
+
+    #[test]
+    fn task_json_keeps_routine_and_actual_round_model() {
+        for (routine, model) in [(true, Some("gpt-6.1-sol")), (false, None)] {
+            let task: TaskView = serde_json::from_value(serde_json::json!({
+                "id": "t", "project": "p", "goal": "g", "title": "Fix parser",
+                "role": "backend", "review": "code", "state": {"state": "running"},
+                "pr": null, "head": null, "routine": routine, "round_model": model,
+            }))
+            .unwrap();
+            let output = task_json(&task, &[]).unwrap();
+            assert_eq!(output["routine"], routine);
+            assert_eq!(output.get("round_model"), Some(&serde_json::json!(model)));
+        }
+    }
 
     #[test]
     fn status_names_the_running_mirror_pass_and_its_project() {

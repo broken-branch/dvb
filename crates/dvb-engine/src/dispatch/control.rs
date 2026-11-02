@@ -57,6 +57,7 @@ async fn stop_decision(
     allowed: impl FnOnce(&Projections) -> Result<(), Refusal>,
 ) -> Result<TaskState, Fail> {
     e.remember();
+    let _stop = e.stopping.lock(task.clone()).await;
     e.decide(e.proj(), task, actor, decision, allowed)?;
     let _lock = e.lock(task).await;
     let (t, _) = read(e, task)?;
@@ -245,12 +246,13 @@ fn stop_retry(e: &AppState, t: &Task) {
     }
 }
 
-/// A stopped task whose unit could not be confirmed stopped: try again when due.
-/// Only after a stop recorded that it must be retried; otherwise the stop in
-/// progress (or reconcile, after a restart) stops the unit.
+/// Enforce a durable task stop even if the engine died before sending it or
+/// recording its first retry. An owner stop reserves its attempt before its
+/// decision wakes dispatch, while it waits for the task lock.
 pub(super) async fn stop_again(e: &AppState, t: &Task) -> Result<Next, Fail> {
-    if !t.facts.retries.contains_key(&Effect::StopUnit) {
-        return Ok(Next::Idle);
+    if e.stopping.contains(&t.view.id) {
+        // Check again even if the owner future is cancelled before sending Stop.
+        return Ok(Next::Wait(Duration::from_secs(1)));
     }
     let Some(r) = live_run(e, t) else {
         return Ok(Next::Idle);
@@ -259,7 +261,8 @@ pub(super) async fn stop_again(e: &AppState, t: &Task) -> Result<Next, Fail> {
         return Ok(Next::Idle);
     }
     let now = e.clock.now();
-    if let Some(at) = t.retry_at
+    if t.facts.retries.contains_key(&Effect::StopUnit)
+        && let Some(at) = t.retry_at
         && at > now
     {
         let ms = u64::try_from(at.millis() - now.millis()).unwrap_or(0);

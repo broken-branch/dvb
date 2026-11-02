@@ -47,6 +47,14 @@ pub(super) async fn update_target(
         Err(error) => return Err(error),
     };
     let result = match (check, engine) {
+        (true, Some(engine)) if engine.version != env!("CARGO_PKG_VERSION") => {
+            write_stdout(format_args!(
+                "The engine runs {}; this box runs {}. Match it with: dvb update\n",
+                engine.version,
+                env!("CARGO_PKG_VERSION")
+            ))?;
+            return Ok(0);
+        }
         (true, Some(_)) => {
             return update(client, dev.is_some(), check, to).await.map(|()| 0);
         }
@@ -342,6 +350,45 @@ mod tests {
         Target {
             dev: Some(dir.into()),
             sock: Some(dir.join("engine.sock")),
+        }
+    }
+
+    #[tokio::test]
+    async fn cockpit_check_detects_version_mismatch_before_checking_releases() {
+        use std::sync::{Arc, Mutex};
+        for version in ["99.0.0", "0.0.1", dvb_core::VERSION] {
+            let dir = tempfile::tempdir().unwrap();
+            let target = target(dir.path(), true);
+            let listener = tokio::net::UnixListener::bind(target.sock()).unwrap();
+            let mut requests = requests(listener);
+            let paths = Arc::new(Mutex::new(Vec::new()));
+            let seen = paths.clone();
+            let server = tokio::spawn(async move {
+                while let Some((request, response)) = requests.recv().await {
+                    let path = request.uri().path().to_owned();
+                    seen.lock().unwrap().push(path.clone());
+                    let body = if path == "/version" {
+                        json!({"version": version})
+                    } else {
+                        assert_eq!(path, "/update");
+                        json!({"current": version, "available": null, "updating": null})
+                    };
+                    response.send(crate::test_http::json(200, body)).unwrap();
+                }
+            });
+            assert_eq!(
+                update_target(&target, &Client::new(target.sock()), true, None)
+                    .await
+                    .unwrap(),
+                0
+            );
+            server.abort();
+            let expected = if version == dvb_core::VERSION {
+                vec!["/version", "/update"]
+            } else {
+                vec!["/version"]
+            };
+            assert_eq!(*paths.lock().unwrap(), expected);
         }
     }
 

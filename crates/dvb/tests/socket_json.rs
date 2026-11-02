@@ -387,6 +387,7 @@ async fn socket_stop_pause_and_resume_json_print_what_they_changed() {
             "id": id, "goal": "g", "state": state, "title": format!("Title {id}"),
             "role": "r-backend", "role_name": "backend", "pr": null, "reason": reason,
             "waiting_for": [],
+            "routine": false, "round_model": null,
         }})
     };
 

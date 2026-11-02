@@ -68,6 +68,19 @@ describe('first project', () => {
   });
 });
 describe('first-run steps', () => {
+  it('explains the Codex-only prerequisite on the sign-in page', async () => {
+    const source = createFixtureSource();
+    source.replies['/logins'] = { claude: false, codex: true, needed: ['claude'] };
+    mount(<Setup />, source);
+    expect(await screen.findByText('Signed in')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Sign in to your subscriptions' })).toBeVisible();
+    expect(
+      screen.getByText(/For a Codex-only setup.*before creating your first project/),
+    ).toBeVisible();
+    expect(screen.getByText(`dvb settings set model_pool '["gpt-6.1-sol"]'`)).toBeVisible();
+    expect(screen.getByText(/reload setup and finish Codex sign-in/)).toBeVisible();
+    expect(screen.getByText(/Signing in alone does not choose the model/)).toBeVisible();
+  });
   it('builds the project request from what the owner typed', () => {
     expect(
       projectRequest('existing', ' example-org/notes/ ', { expected: ['tests', 'build'] }),

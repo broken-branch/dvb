@@ -12,7 +12,10 @@ import type { LoginStarted, Logins, Vendor } from '@/lib/data/types';
  * signed in once every vendor the engine lists as needed is, so an empty list needs none; an older
  * engine that sends no list needs both vendors.
  */
-export function LoginStep({ onChange }: { onChange?: (signedIn: boolean) => void } = {}) {
+export function LoginStep({
+  onChange,
+  setup = false,
+}: { onChange?: (signedIn: boolean) => void; setup?: boolean } = {}) {
   const { data: s } = useStore(),
     [logins, setLogins] = useState<Logins>();
   const read = useCallback(async () => {
@@ -34,6 +37,16 @@ export function LoginStep({ onChange }: { onChange?: (signedIn: boolean) => void
   return (
     <section>
       <h2>Sign in to your subscriptions</h2>
+      {setup && (
+        <>
+          <p>For a Codex-only setup, run this command before creating your first project:</p>
+          <pre>{`dvb settings set model_pool '["gpt-6.1-sol"]'`}</pre>
+          <p>
+            Then reload setup and finish Codex sign-in. Signing in alone does not choose the model
+            for your project.
+          </p>
+        </>
+      )}
       {(['claude', 'codex'] as const).map((vendor) => (
         <VendorLogin
           key={vendor}

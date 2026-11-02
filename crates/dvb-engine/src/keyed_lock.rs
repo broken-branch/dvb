@@ -41,6 +41,13 @@ impl<K: Ord + Clone> KeyedLocks<K> {
         }
     }
 
+    pub fn contains(&self, key: &K) -> bool {
+        self.entries
+            .lock()
+            .unwrap_or_else(dvb_core::sync::recover)
+            .contains_key(key)
+    }
+
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.entries.lock().unwrap().is_empty()

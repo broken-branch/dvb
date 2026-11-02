@@ -36,6 +36,7 @@ export function createClient(
   appVersion: string,
   connection: () => Connection,
   setConnection: (value: Connection) => void,
+  generation: () => number = () => 0,
 ) {
   const version = (value: string | null) => {
     if (value)
@@ -76,6 +77,7 @@ export function createClient(
         .filter((entry): entry is [string, string | number] => entry[1] !== undefined)
         .map(([key, value]) => [key, String(value)]),
     );
+    const started = generation();
     const response = await fetcher(
       `${base}${options.path || template.replace(/\{([^}]+)\}/g, (_, key: string) => encodeURIComponent((options.params as Record<string, string> | undefined)?.[key] ?? ''))}${query.size ? `?${query}` : ''}`,
       {
@@ -89,7 +91,9 @@ export function createClient(
         body: options.body ? JSON.stringify(options.body) : undefined,
       },
     );
-    version(response.headers.get('dvb-version'));
+    // A previous connection's reply cannot change the current engine's version.
+    if (started === generation() && !options.signal?.aborted)
+      version(response.headers.get('dvb-version'));
     // The desk's GitHub bridge replaces unsuccessful engine replies with plain text.
     if (!response.ok && response.headers.get('Content-Type')?.startsWith('text/plain'))
       throw new Error((await response.text()).trim() || `Request failed (${response.status}).`);

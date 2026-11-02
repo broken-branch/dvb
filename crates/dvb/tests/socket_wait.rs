@@ -188,6 +188,7 @@ const PLAN: &str = "Question q-plan: Approve the plan?\n  1. Approve - Start the
 
 #[tokio::test(flavor = "multi_thread")]
 async fn until_plan_returns_the_plan_question_with_its_id_and_options() {
+    let plan = "Question q-plan: Approve the plan?\nPlan:\n  Task g-task: Build\n    x\n  1. Approve - Start the tasks (recommended)\n  2. Not yet - Hold the plan\n";
     let f = Fixture::new(false);
     let _serving = f.serve().await;
     assert_eq!(
@@ -196,9 +197,9 @@ async fn until_plan_returns_the_plan_question_with_its_id_and_options() {
     );
     let waiting = spawn(&f.sock, &["g", "--until", "plan"]);
     f.append(vec![f.question("q-plan", "g", true)]);
-    assert_eq!(result(&waiting.await.unwrap()), (0, PLAN.into()));
+    assert_eq!(result(&waiting.await.unwrap()), (0, plan.into()));
     // Already open when it starts: at once, with no timeout.
-    assert_eq!(wait(&f.sock, &["g", "--until", "plan"]), (0, PLAN.into()));
+    assert_eq!(wait(&f.sock, &["g", "--until", "plan"]), (0, plan.into()));
     let (code, json) = wait(&f.sock, &["g", "--until", "plan", "--json"]);
     assert_eq!(code, 0);
     let json: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -209,7 +210,7 @@ async fn until_plan_returns_the_plan_question_with_its_id_and_options() {
         serde_json::json!({"id": 1, "text": "Approve", "effect": "Start the tasks"})
     );
     // Waiting for Done, the plan question is a question of the goal.
-    assert_eq!(wait(&f.sock, &["g"]), (7, PLAN.into()));
+    assert_eq!(wait(&f.sock, &["g"]), (7, plan.into()));
     // The owner's yes closes the question: the plan is no longer asked.
     let _: serde_json::Value = Client::new(f.sock.clone())
         .post(
@@ -447,6 +448,8 @@ async fn a_plan_on_hold_exits_6_and_needs_you_with_dvb_resume_goal() {
             "question": {
                 "id": again, "project": "p", "goal": "g", "task": null,
                 "subject": "Approve the plan?", "recommended": 1,
+                "plan": [{"task": "g-task", "title": "Build", "role": "backend",
+                          "review": "code", "summary": "x"}],
                 "options": [
                     {"id": 1, "text": "Approve", "effect": "Start the tasks"},
                     {"id": 2, "text": "Not yet", "effect": "Hold the plan"},

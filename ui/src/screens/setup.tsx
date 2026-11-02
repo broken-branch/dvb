@@ -170,11 +170,13 @@ export function Setup() {
           }
           if (!project.ok) return project;
           id = project.value.id;
+          // Creation survives a refused first goal, even before its event arrives.
+          setAdded(project.value);
+          setProject(id);
+          setKind('known');
+          if (withGoal) setGoal((typed) => typed ?? goal);
           if (!withGoal && project.value.issues_found?.open) {
             // Stay on the step to show what dvb found, and offer to work from trusted issues.
-            setAdded(project.value);
-            setProject(id);
-            setKind('known');
             return { ok: true as const, value: '' };
           }
         }
@@ -241,7 +243,7 @@ export function Setup() {
         </>
       )}
     </>,
-    <LoginStep onChange={setSignedIn} />,
+    <LoginStep setup onChange={setSignedIn} />,
     <GithubSetup onChange={githubChanged} />,
     <Walkthrough onDone={next} />,
     <>

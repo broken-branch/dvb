@@ -1,7 +1,7 @@
 import { routes } from '@/lib/routes';
 import { TextDisclosure } from '@/components/dvb/text-disclosure';
 import { mirrorObservation, stateLabels, word } from '@/lib/data/display';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { ListPlus, Pause, Play, Plus } from 'lucide-react';
 import { Card } from '@/components/dvb/card';
@@ -50,7 +50,13 @@ export function ProjectPage({ id, tab = 'board' }: { id: string; tab?: string })
     opener = useRef<HTMLElement | null>(null),
     action = useAction(),
     goalAction = useAction(),
+    // Removal unmounts its controls before the receipt navigates home.
+    removeAction = useAction(),
     resumeAction = useAction();
+  const editorState = useRef({ edit, draft, issues, startNow });
+  useLayoutEffect(() => {
+    editorState.current = { edit, draft, issues, startNow };
+  }, [edit, draft, issues, startNow]);
 
   const connected = canWrite,
     markSeen = s.markProjectSeen;
@@ -108,7 +114,8 @@ export function ProjectPage({ id, tab = 'board' }: { id: string; tab?: string })
       onSubmit={(e) => {
         e.preventDefault();
         const text = draft.trim(),
-          body = issues.length ? { text, issues } : { text };
+          body = issues.length ? { text, issues } : { text },
+          submitted = editorState.current;
         void goalAction.act(
           () =>
             edit.kind === 'course'
@@ -119,7 +126,16 @@ export function ProjectPage({ id, tab = 'board' }: { id: string; tab?: string })
                     ? { ...body, after: newest.id }
                     : body,
                 ),
-          closeEditor,
+          () => {
+            const current = editorState.current;
+            if (
+              current.edit === submitted.edit &&
+              current.draft === submitted.draft &&
+              current.issues === submitted.issues &&
+              current.startNow === submitted.startNow
+            )
+              closeEditor();
+          },
         );
       }}
     >
@@ -381,7 +397,7 @@ export function ProjectPage({ id, tab = 'board' }: { id: string; tab?: string })
                   <p>Default branch: {p.default_branch}</p>
                 </Card>
                 <Autonomy name={p.name} />
-                <RemoveProject project={p} />
+                <RemoveProject project={p} action={removeAction} />
               </div>
             ),
           },
@@ -425,9 +441,14 @@ function Autonomy({ name }: { name: string }) {
   );
 }
 /** Removes the project from this install after one confirm that names it. */
-function RemoveProject({ project }: { project: Project }) {
+function RemoveProject({
+  project,
+  action,
+}: {
+  project: Project;
+  action: ReturnType<typeof useAction>;
+}) {
   const { data: s, canWrite } = useStore(),
-    action = useAction(),
     opener = useRef<HTMLButtonElement>(null),
     [confirming, setConfirming] = useState(false);
   return (
@@ -493,7 +514,7 @@ function RemoveProject({ project }: { project: Project }) {
 function BriefEditor({ project }: { project: string }) {
   const { data: s, canWrite } = useStore(),
     action = useAction(),
-    [saved, setSaved] = useState(false);
+    [saved, setSaved] = useState<string>();
   const { value, error } = useRead(() => s.brief(project), [project]);
   const [draft, setDraft] = useState<string>();
   const text = draft ?? value?.text ?? '';
@@ -509,12 +530,12 @@ function BriefEditor({ project }: { project: string }) {
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          setSaved(false);
+          setSaved(undefined);
           void action.act(
             () => s.setBrief(project, { text }),
             (b) => {
-              setDraft(b.text);
-              setSaved(true);
+              setDraft((current) => (current === undefined || current === text ? b.text : current));
+              setSaved(b.text);
             },
           );
         }}
@@ -526,14 +547,14 @@ function BriefEditor({ project }: { project: string }) {
             value={text}
             onChange={(e) => {
               setDraft(e.target.value);
-              setSaved(false);
+              setSaved(undefined);
             }}
           />
         </label>
         <DataError message={action.error} />
         <div className="actions">
           <Button disabled={action.busy || !value || !canWrite}>Save brief</Button>
-          {saved && <span role="status">Brief saved.</span>}
+          {saved !== undefined && saved === text && <span role="status">Brief saved.</span>}
         </div>
       </form>
     </Card>

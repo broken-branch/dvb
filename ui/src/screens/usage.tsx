@@ -1,5 +1,5 @@
 import { routes } from '@/lib/routes';
-import { useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Card, ListRow } from '@/components/dvb/card';
 import { Heading, Status, Meter, ChoiceSelect, InfoTip } from '@/components/dvb/common';
 import { DataError, useRead } from '@/components/dvb/data-feedback';
@@ -40,6 +40,14 @@ export function Usage() {
     [project, setProject] = useState('all'),
     [since, setSince] = useState('all'),
     [today] = useState(() => String(new Date().setHours(0, 0, 0, 0)));
+  const connection = `${s.connection.state}/${'engineVersion' in s.connection ? s.connection.engineVersion : ''}`;
+  const generation = useRef(0);
+  useEffect(() => {
+    setChecks({});
+    return () => {
+      generation.current++;
+    };
+  }, [connection]);
   const roles = Object.values(s.roles).flat();
   const usage = useRead(
     () =>
@@ -47,7 +55,7 @@ export function Usage() {
         project: project === 'all' ? undefined : project,
         since: since === 'all' ? undefined : Number(since),
       }),
-    [s.usage, project, since, s.usageVersion],
+    [s.usage, project, since, s.usageVersion, connection],
   );
   const windows = usage.value?.windows,
     [readWindows, setReadWindows] = useState(windows);
@@ -63,6 +71,7 @@ export function Usage() {
       });
   }
   async function checkAgain(vendor: Vendor) {
+    const started = generation.current;
     setChecks((c) => ({ ...c, [vendor]: { busy: true } }));
     let done: Check;
     try {
@@ -87,7 +96,7 @@ export function Usage() {
         text: e instanceof Error ? e.message : 'Unable to connect. Try again.',
       };
     }
-    setChecks((c) => ({ ...c, [vendor]: done }));
+    if (started === generation.current) setChecks((c) => ({ ...c, [vendor]: done }));
   }
   return (
     <>

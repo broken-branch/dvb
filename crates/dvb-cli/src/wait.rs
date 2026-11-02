@@ -238,6 +238,24 @@ struct End {
 
 fn question_text(q: &QuestionView) -> String {
     let mut out = format!("Question {}: {}\n", q.id, q.subject);
+    if !q.plan.is_empty() {
+        out.push_str("Plan:\n");
+        for task in &q.plan {
+            out.push_str(&format!("  Task {}: {}\n", task.task, task.title));
+            for line in task.summary.lines() {
+                out.push_str(&format!("    {line}\n"));
+            }
+            if !task.after.is_empty() {
+                let after = task
+                    .after
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push_str(&format!("    After: {after}\n"));
+            }
+        }
+    }
     for o in &q.options {
         out.push_str(&option_line(q, o));
         out.push('\n');
@@ -354,6 +372,63 @@ mod tests {
     use super::*;
     use crate::test_http;
     use serde_json::json;
+
+    fn plan_question() -> QuestionView {
+        serde_json::from_value(json!({
+            "id": "q", "project": "p", "goal": "g", "subject": "Approve the plan?",
+            "format": "simple", "recommended": 1, "open": true, "answer": null,
+            "options": [{"id": 1, "text": "Approve", "effect": "Start the tasks", "approves_plan": true}],
+            "plan": [
+                {"task": "t-z", "title": "Build the five-book catalogue", "role": "backend",
+                 "review": "code", "summary": "Include a search box\nMatch titles and authors"},
+                {"task": "t-a", "title": "Test the search", "role": "backend",
+                 "review": "code", "summary": "Cover empty results", "after": ["t-z"], "routine": true},
+                {"task": "t-m", "title": "Document the catalogue", "role": "backend",
+                 "review": "code", "summary": "Explain how to search", "after": ["t-z", "t-a"]}
+            ]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn text_wait_shows_the_plan_before_approval() {
+        let mut question = plan_question();
+        assert_eq!(
+            question_text(&question),
+            concat!(
+                "Question q: Approve the plan?\n",
+                "Plan:\n",
+                "  Task t-z: Build the five-book catalogue\n",
+                "    Include a search box\n",
+                "    Match titles and authors\n",
+                "  Task t-a: Test the search\n",
+                "    Cover empty results\n",
+                "    After: t-z\n",
+                "  Task t-m: Document the catalogue\n",
+                "    Explain how to search\n",
+                "    After: t-z, t-a\n",
+                "  1. Approve - Start the tasks (recommended)\n",
+            )
+        );
+        question.plan.clear();
+        assert_eq!(
+            question_text(&question),
+            "Question q: Approve the plan?\n  1. Approve - Start the tasks (recommended)\n"
+        );
+    }
+
+    #[test]
+    fn json_wait_keeps_the_plan_before_approval() {
+        let mut question = plan_question();
+        let value = question_json(&question);
+        assert_eq!(value["plan"], serde_json::to_value(&question.plan).unwrap());
+        assert_eq!(value["plan"][0]["title"], "Build the five-book catalogue");
+        assert_eq!(value["plan"][1]["after"], json!(["t-z"]));
+        assert_eq!(value["plan"][2]["after"], json!(["t-z", "t-a"]));
+        assert_eq!(value["options"][0]["id"], 1);
+        question.plan.clear();
+        assert_eq!(question_json(&question)["plan"], json!([]));
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_goal_done_just_before_the_tail_is_read_ends_the_wait() {

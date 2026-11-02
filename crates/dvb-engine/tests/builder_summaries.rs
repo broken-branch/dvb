@@ -15,6 +15,7 @@ struct Fixture {
     _tmp: tempfile::TempDir,
     e: AppState,
     fake: Arc<FakeForge>,
+    launcher: Arc<support::launcher::FakeLauncher>,
     recorded: Arc<support::InterruptedForge>,
     repo: Repo,
     base: String,
@@ -35,12 +36,13 @@ async fn fixture_with(
     let tmp = tempfile::tempdir().unwrap();
     let fake = Arc::new(FakeForge::local_git().with_clock(clock.clone()));
     let recorded = Arc::new(support::InterruptedForge::new(fake.clone()));
+    let launcher = Arc::new(support::launcher::FakeLauncher::default());
     let e = support::engine::open_with(
         &tmp.path().join("engine"),
         "unused-dvb",
         dvb_engine::EngineOptions {
             clock: Some(clock),
-            launcher: Some(Arc::new(support::launcher::FakeLauncher::default())),
+            launcher: Some(launcher.clone()),
             forge: Some(recorded.clone()),
             ..Default::default()
         },
@@ -84,6 +86,7 @@ async fn fixture_with(
         _tmp: tmp,
         e,
         fake,
+        launcher,
         recorded,
         repo,
         base,
@@ -1386,6 +1389,10 @@ async fn completion_override_does_not_undo_a_later_explicit_stop() {
 #[tokio::test]
 async fn completion_recheck_waits_for_the_stopped_worker_to_end_before_reusing_work() {
     let f = fixture().await;
+    f.launcher.running("live");
+    f.launcher
+        .fail_stops
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let (roles, hires) = support::events::default_role_hire_events();
     f.e.append_checked(Some(&ProjectId::new("p")), Actor::Engine, |_, _| {
         let mut events: Vec<_> = roles.into_iter().chain(hires).collect();
@@ -1405,9 +1412,7 @@ async fn completion_recheck_waits_for_the_stopped_worker_to_end_before_reusing_w
             EventKind::TaskStateChanged {
                 task: TaskId::new("t"),
                 from: TaskState::Planned,
-                to: TaskState::Stopped {
-                    was: Box::new(TaskState::Running),
-                },
+                to: TaskState::Publishing,
             },
         ]);
         Ok(events)
@@ -1420,6 +1425,9 @@ async fn completion_recheck_waits_for_the_stopped_worker_to_end_before_reusing_w
         f.e.proj().tasks[&TaskId::new("t")].facts.builder,
         Some(RunId::new("live"))
     );
+    assert!(f.launcher.is_active(&RunId::new("live")));
+    assert!(f.e.proj().runs[&RunId::new("live")].ended.is_none());
+    f.launcher.end(&RunId::new("live"));
     f.e.end_run(&RunId::new("live"), EndReason::Stopped, None)
         .unwrap();
     dispatch::step_now(&f.e, &TaskId::new("t")).await.unwrap();

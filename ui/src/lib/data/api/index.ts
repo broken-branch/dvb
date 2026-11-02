@@ -140,16 +140,36 @@ export function createLiveSource(
     eventsBase = options.eventsBase ?? '',
     version = options.version || appVersion();
   let ready = false,
+    connectionGeneration = 0,
     observed: Connection = { state: 'reconnecting' };
   const setConnection = (connection: Connection) => {
+    if (
+      'engineVersion' in connection &&
+      (!('engineVersion' in observed) || connection.engineVersion !== observed.engineVersion)
+    )
+      connectionGeneration++;
     observed = connection;
     source.set({
       connection:
         connection.state === 'connected' && !ready ? { state: 'reconnecting' } : connection,
     });
   };
-  const client = createClient(fetcher, base, version, () => get().connection, setConnection);
-  const deskClient = createClient(fetcher, '', version, () => get().connection, setConnection);
+  const client = createClient(
+    fetcher,
+    base,
+    version,
+    () => get().connection,
+    setConnection,
+    () => connectionGeneration,
+  );
+  const deskClient = createClient(
+    fetcher,
+    '',
+    version,
+    () => get().connection,
+    setConnection,
+    () => connectionGeneration,
+  );
   const call = client.call;
   let controller: AbortController | undefined,
     timer: ReturnType<typeof setTimeout> | undefined,
@@ -160,6 +180,7 @@ export function createLiveSource(
     epoch = 0,
     settingsGeneration = 0;
   function clearReadiness() {
+    connectionGeneration++;
     ready = false;
     if (get().connection.state !== 'version-mismatch')
       source.set({ connection: { state: 'reconnecting' } });
@@ -311,6 +332,7 @@ export function createLiveSource(
     try {
       await refreshing?.catch(() => {});
       const v = await call('/version', 'get', { signal });
+      if (!active || generation !== epoch || signal.aborted) return;
       if (!v.ok) throw new Error(refusalText(v.refusal));
       client.version(v.value.version);
       // Capture the boundary BEFORE reading snapshots. Stream events invalidate
@@ -356,6 +378,7 @@ export function createLiveSource(
         signal,
         headers: { Accept: 'text/event-stream', 'Last-Event-ID': String(cursor) },
       });
+      if (!active || generation !== epoch || signal.aborted) return;
       client.version(response.headers.get('dvb-version'));
       if (!response.ok || !response.body) throw new Error('Unable to follow the live feed.');
       failures = 0;

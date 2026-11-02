@@ -10,25 +10,38 @@ export function toggleWork(s: DataStore, work: Project | Task): Promise<ApiResul
 }
 export function useAction() {
   const pending = useRef(false);
+  const generation = useRef(0);
+  useEffect(
+    () => () => {
+      generation.current++;
+      pending.current = false;
+    },
+    [],
+  );
   const [error, setError] = useState(''),
     [busy, setBusy] = useState(false);
   async function act<T>(operation: () => Promise<ApiResult<T>>, done?: (value: T) => void) {
     if (pending.current) return;
+    const started = generation.current;
     pending.current = true;
     setBusy(true);
     setError('');
     try {
       const result = await operation();
+      if (started !== generation.current) return false;
       if (result.ok) {
         done?.(result.value);
         return true;
       }
       setError(refusalText(result.refusal));
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Unable to connect. Try again.');
+      if (started === generation.current)
+        setError(e instanceof Error ? e.message : 'Unable to connect. Try again.');
     } finally {
-      pending.current = false;
-      setBusy(false);
+      if (started === generation.current) {
+        pending.current = false;
+        setBusy(false);
+      }
     }
     return false;
   }

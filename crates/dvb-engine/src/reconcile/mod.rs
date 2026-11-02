@@ -165,22 +165,7 @@ async fn settle(e: &AppState, run: &RunId) -> bool {
             );
             return true;
         }
-        // A builder that wrote its head or a reviewer that gave its verdict
-        // finished. Anything else was cut off, including a planner with no end.
-        Ok(UnitState::Inactive) => {
-            let finished = match (&r.assignment.task, &r.assignment.reviews) {
-                (None, _) => false,
-                (Some(_), Some(_)) => r.verdict_given,
-                (Some(_), None) => {
-                    r.collected.is_some() || head_file(e, &r.assignment.run).is_some()
-                }
-            };
-            if finished {
-                EndReason::Completed
-            } else {
-                EndReason::Interrupted
-            }
-        }
+        Ok(UnitState::Inactive) => inactive_reason(e, &r),
         Ok(UnitState::Failed) => EndReason::Crashed,
         Err(err) => {
             eprintln!("dvb engine: reconcile run {run}: {err}; again in {RUN_AGAIN:?}");
@@ -196,6 +181,38 @@ async fn settle(e: &AppState, run: &RunId) -> bool {
     true
 }
 
+/// Preserve a durable stop when its unit exited before the stop was recorded.
+/// Otherwise, a collected builder or a reviewer with its verdict finished;
+/// other inactive units were cut off, including a planner with no end receipt.
+fn inactive_reason(e: &AppState, r: &crate::proj::Run) -> EndReason {
+    if let Some(t) = r
+        .assignment
+        .task
+        .as_ref()
+        .and_then(|task| e.proj().tasks.get(task).cloned())
+        .filter(|t| t.facts.run.as_ref() == Some(&r.assignment.run))
+    {
+        let state = if let TaskState::Unknown { last } = &t.view.state {
+            last.as_ref()
+        } else {
+            &t.view.state
+        };
+        if matches!(state, TaskState::Stopped { .. }) {
+            return EndReason::Stopped;
+        }
+    }
+    let finished = match (&r.assignment.task, &r.assignment.reviews) {
+        (None, _) => false,
+        (Some(_), Some(_)) => r.verdict_given,
+        (Some(_), None) => r.collected.is_some() || head_file(e, &r.assignment.run).is_some(),
+    };
+    if finished {
+        EndReason::Completed
+    } else {
+        EndReason::Interrupted
+    }
+}
+
 /// The `head` file a run's collect step wrote, if any.
 fn head_file(e: &AppState, run: &RunId) -> Option<String> {
     let text =
@@ -204,7 +221,8 @@ fn head_file(e: &AppState, run: &RunId) -> Option<String> {
     (!head.is_empty()).then(|| head.to_owned())
 }
 
-/// One unknown task: observe, decide, and stop a unit that outlived a stop.
+/// One unknown task: settle a confirmed end before deciding from its head.
+/// The dispatcher enforces any restored stop, including failed stop attempts.
 pub(crate) async fn task_once(e: &AppState, task: &TaskId) -> Result<(), Fail> {
     let _lock = e.lock(task).await;
     let t = e
@@ -234,6 +252,27 @@ pub(crate) async fn task_once(e: &AppState, task: &TaskId) -> Result<(), Fail> {
     };
     fail::fail_point!("reconcile.observed");
     // Reports the run made while it was checked (its head, its end) count.
+    let current = t
+        .facts
+        .run
+        .as_ref()
+        .and_then(|r| e.proj().runs.get(r).cloned());
+    // The first startup run query may have failed, leaving its retry behind
+    // this task observation. Record the actual end (including driver evidence)
+    // before Reconcile can mistake a failed run's collected head for success.
+    if let Some(r) = current.as_ref().filter(|r| r.ended.is_none())
+        && unit != UnitState::Active
+    {
+        let reason = if unit == UnitState::Failed {
+            EndReason::Crashed
+        } else {
+            inactive_reason(e, r)
+        };
+        dispatch::run_ended(e, &r.assignment.run, reason).await?;
+        if !matches!(e.proj().tasks[task].view.state, TaskState::Unknown { .. }) {
+            return Ok(());
+        }
+    }
     let current = t
         .facts
         .run
@@ -296,16 +335,6 @@ pub(crate) async fn task_once(e: &AppState, task: &TaskId) -> Result<(), Fail> {
                 )?;
             }
         }
-        // A unit that outlived a stop is stopped.
-        (TaskState::Stopped { .. }, None) if unit == UnitState::Active => {
-            let unit = UnitId {
-                vendor: r.assignment.vendor,
-                run: r.assignment.run.clone(),
-            };
-            if let Err(err) = e.launcher().stop(&unit).await {
-                eprintln!("dvb engine: stop {}: {err}", unit.unit_name());
-            }
-        }
         (
             TaskState::Preparing | TaskState::Running | TaskState::Collecting | TaskState::InReview,
             None,
@@ -329,3 +358,6 @@ pub(crate) async fn task_once(e: &AppState, task: &TaskId) -> Result<(), Fail> {
 
 mod collection;
 pub(crate) use collection::recover_collection;
+
+#[cfg(test)]
+mod tests;
