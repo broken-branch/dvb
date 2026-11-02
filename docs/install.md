@@ -276,7 +276,9 @@ pinned). A run of a Rust workspace installs it before its session, under a lock 
 `RUSTUP_HOME`, so concurrent runs of a project do not install it at once. mise puts
 `node`, `npm`, `npx` and `corepack` first on a run's `PATH` and fetches the `.nvmrc`
 or `.node-version` Node into the same cache; a project that pins none uses the
-system's Node. Each run makes the mise links afresh. The engine installer also
+system's Node. Downloaded npm packages are cached in the project's cache too,
+so a fresh run's managed home does not discard them. Each run makes the mise
+links afresh. The engine installer also
 includes pinned, checksum-verified sccache for the per-project Cargo caches.
 
 A run sees only its own project's cache: the run units' drop-in

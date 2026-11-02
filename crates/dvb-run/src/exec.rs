@@ -137,6 +137,8 @@ pub fn prepare_build_cache(
     rustup_home: Option<&std::ffi::OsStr>,
 ) -> std::io::Result<()> {
     std::fs::create_dir_all(cache.join("cargo")).map_err(|e| cache_error(cache, e))?;
+    // Each run has a fresh HOME; keep downloaded npm packages with the project.
+    command.env("npm_config_cache", cache.join("npm"));
     if rustup_home.is_none() {
         // Shared by the project's runs: rustup installs a pinned toolchain
         // (rust-toolchain.toml) there on first use, and stable for a project
@@ -510,13 +512,15 @@ fn share_tree(dir: &Path) {
     }
 }
 
-/// Adds group read, write and search to the directory, opened without
-/// following a link, unless it is on another mount; whether to look inside.
+/// Adds group read, write and search, and enough owner access to walk the
+/// directory, unless it is on another mount; whether to look inside.
 fn share_dir(path: &Path, mount: u64) -> std::io::Result<bool> {
     use rustix::fs::{AtFlags, Mode, OFlags, StatxFlags};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::PermissionsExt;
     let fd = rustix::fs::open(
         path,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )?;
     let st = rustix::fs::statx(
@@ -529,8 +533,13 @@ fn share_dir(path: &Path, mount: u64) -> std::io::Result<bool> {
         return Ok(false);
     }
     let mode = u32::from(st.stx_mode) & 0o7777;
-    if mode & 0o070 != 0o070 {
-        rustix::fs::fchmod(&fd, Mode::from_raw_mode(mode | 0o070))?;
+    if mode & 0o570 != 0o570 {
+        // O_PATH can open an unreadable directory, but fchmod rejects that fd.
+        // This link names the opened inode even if its original path changes.
+        std::fs::set_permissions(
+            format!("/proc/self/fd/{}", fd.as_raw_fd()),
+            std::fs::Permissions::from_mode(mode | 0o570),
+        )?;
     }
     Ok(true)
 }
@@ -1100,6 +1109,28 @@ mod tests {
         assert_eq!(mode(&sealed.join("out")), 0o444);
         assert_eq!(mode(&outside), 0o700);
         set(&sealed, 0o755);
+    }
+
+    #[test]
+    fn a_run_shares_directories_its_owner_cannot_read_or_search() {
+        use std::os::unix::fs::PermissionsExt;
+        for initial in [0o000, 0o300, 0o400] {
+            let tmp = tempfile::tempdir().unwrap();
+            let sealed = tmp.path().join("sealed");
+            let nested = sealed.join("nested");
+            std::fs::create_dir_all(&nested).unwrap();
+            std::fs::write(nested.join("output"), "build output").unwrap();
+            std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(initial)).unwrap();
+            share_tree(tmp.path());
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+            let shared = mode(&sealed);
+            // Also let a failing test remove its fixture.
+            std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let descendant = mode(&nested);
+            assert_eq!(shared, initial | 0o570, "initial mode {initial:o}");
+            assert_eq!(descendant, 0o770, "initial mode {initial:o}");
+        }
     }
 
     #[tokio::test]

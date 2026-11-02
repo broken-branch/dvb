@@ -88,28 +88,7 @@ impl Client {
         let response = self.api.execute(request).await?;
         let status = response.status().as_u16();
         if matches!(status, 403 | 429) {
-            let now = self.wait.clock.now();
-            let header = |name: &str| response.headers().get(name).and_then(|v| v.to_str().ok());
-            let [resource, used, remaining, reset_header] = [
-                "x-ratelimit-resource",
-                "x-ratelimit-used",
-                "x-ratelimit-remaining",
-                "x-ratelimit-reset",
-            ]
-            .map(|name| header(name).unwrap_or("<absent>").to_owned());
-            let reset = header("retry-after")
-                .and_then(|v| v.parse::<i64>().ok())
-                .filter(|v| *v >= 0)
-                .map(|seconds| now.plus_millis(seconds.saturating_mul(1_000)))
-                .or_else(|| {
-                    (header("x-ratelimit-remaining") == Some("0"))
-                        .then(|| {
-                            header("x-ratelimit-reset")
-                                .and_then(|v| v.parse::<i64>().ok())
-                                .map(|seconds| Timestamp(seconds.saturating_mul(1_000)))
-                        })
-                        .flatten()
-                });
+            let headers = response.headers().clone();
             let error = octocrab::map_github_error(response).await;
             let limited = status == 429
                 || error.as_ref().err().is_some_and(|error| {
@@ -121,28 +100,68 @@ impl Client {
                     )
                 });
             if limited {
-                // Only these response headers; debug formatting keeps values on one line.
-                eprintln!(
-                    "dvb forge: GitHub HTTP {status} (rate limit): x-ratelimit-resource={resource:?} \
-                x-ratelimit-used={used:?} x-ratelimit-remaining={remaining:?} \
-                x-ratelimit-reset={reset_header:?}"
-                );
-                let limit = RateLimit { reset };
-                self.wait.record(limit, now);
-                return Err(Error::Wait(limit, Some(status)));
+                return Err(self.limited(status, &headers));
             }
             return error.map_err(Error::Api);
         }
         Ok(response)
     }
+    fn limited(&self, status: u16, headers: &http::HeaderMap) -> Error {
+        let now = self.wait.clock.now();
+        let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+        let [resource, used, remaining, reset_header] = [
+            "x-ratelimit-resource",
+            "x-ratelimit-used",
+            "x-ratelimit-remaining",
+            "x-ratelimit-reset",
+        ]
+        .map(|name| header(name).unwrap_or("<absent>").to_owned());
+        let reset = header("retry-after")
+            .and_then(|v| v.parse::<i64>().ok())
+            .filter(|v| *v >= 0)
+            .map(|seconds| now.plus_millis(seconds.saturating_mul(1_000)))
+            .or_else(|| {
+                (header("x-ratelimit-remaining") == Some("0"))
+                    .then(|| {
+                        header("x-ratelimit-reset")
+                            .and_then(|v| v.parse::<i64>().ok())
+                            .map(|seconds| Timestamp(seconds.saturating_mul(1_000)))
+                    })
+                    .flatten()
+            });
+        // Only these response headers; debug formatting keeps values on one line.
+        eprintln!(
+            "dvb forge: GitHub HTTP {status} (rate limit): x-ratelimit-resource={resource:?} \
+        x-ratelimit-used={used:?} x-ratelimit-remaining={remaining:?} \
+        x-ratelimit-reset={reset_header:?}"
+        );
+        let limit = RateLimit { reset };
+        self.wait.record(limit, now);
+        Error::Wait(limit, Some(status))
+    }
+
     async fn json<B: Serialize + ?Sized>(
         &self,
         method: Method,
         route: impl AsRef<str>,
         body: Option<&B>,
     ) -> Result<serde_json::Value, Error> {
+        let graphql = route.as_ref() == "/graphql";
         let response = self.raw(method, route, body).await?;
-        Ok(serde_json::Value::from_response(octocrab::map_github_error(response).await?).await?)
+        let status = response.status().as_u16();
+        let headers = graphql.then(|| response.headers().clone());
+        let value =
+            serde_json::Value::from_response(octocrab::map_github_error(response).await?).await?;
+        if let Some(headers) = headers
+            && value["errors"].as_array().is_some_and(|errors| {
+                errors.iter().any(|error| {
+                    error["type"] == "RATE_LIMITED" || error["extensions"]["code"] == "RATE_LIMITED"
+                })
+            })
+        {
+            return Err(self.limited(status, &headers));
+        }
+        Ok(value)
     }
     pub(super) async fn get(&self, route: impl AsRef<str>) -> Result<serde_json::Value, Error> {
         self.json(Method::GET, route, None::<&()>).await
@@ -225,6 +244,52 @@ mod tests {
                 br#"{"message":"API rate limit exceeded"}"#,
             )))
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn graphql_rate_limit_blocks_other_requests_until_reset() {
+        for code in [
+            serde_json::json!({"type":"RATE_LIMITED"}),
+            serde_json::json!({"extensions":{"code":"RATE_LIMITED"}}),
+        ] {
+            let mut limited = response(
+                200,
+                &[("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", "20")],
+            );
+            *limited.body_mut() = Full::new(Bytes::from(
+                serde_json::json!({"data":null,"errors":[code]}).to_string(),
+            ));
+            let (client, clock, count) = fixture(vec![limited, response(200, &[])]);
+            let error = super::super::github::api_error(
+                client.post("/graphql", None::<&()>).await.unwrap_err(),
+            );
+            assert!(error.retryable);
+            assert_eq!(
+                error.rate_limit,
+                Some(RateLimit {
+                    reset: Some(Timestamp(20_000))
+                })
+            );
+            clock.set(Timestamp(20_999));
+            assert!(client.get("/repos/org/repo").await.is_err());
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            clock.set(Timestamp(21_000));
+            client.get("/repos/org/repo").await.unwrap();
+            assert_eq!(count.load(Ordering::SeqCst), 2);
+        }
+        // A successful mutation exhausting the budget must still be acknowledged;
+        // permission errors remain board refusals, not budget waits.
+        for body in [
+            serde_json::json!({"data":{"updateProjectV2":{"projectV2":{"id":"BOARD"}}}}),
+            serde_json::json!({"data":null,"errors":[{"type":"FORBIDDEN"}]}),
+        ] {
+            let mut reply = response(200, &[("x-ratelimit-remaining", "0")]);
+            *reply.body_mut() = Full::new(Bytes::from(body.to_string()));
+            let (client, _, count) = fixture(vec![reply]);
+            assert_eq!(client.post("/graphql", None::<&()>).await.unwrap(), body);
+            assert!(client.wait.check().is_ok());
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+        }
     }
 
     #[tokio::test]

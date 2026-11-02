@@ -1334,6 +1334,7 @@ impl Forge for GitHub {
             if read.status().as_u16() == 404 {
                 return Ok(());
             }
+            octocrab::map_github_error(read).await.map_err(api_error)?;
         }
         Err(ForgeError {
             rate_limit: None,
@@ -1603,6 +1604,72 @@ fn log_excerpt(log: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn delete_branch_preserves_the_absence_probes_transient_failure() {
+        use bytes::Bytes;
+        use http_body_util::Full;
+        for (read_status, expected) in [
+            (503, Some((503, true))),
+            (200, Some((422, false))),
+            (404, None),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let seen = calls.clone();
+            let service = tower::service_fn(move |request: http::Request<octocrab::OctoBody>| {
+                let method = request.method().as_str();
+                let path = request.uri().path();
+                seen.lock()
+                    .unwrap()
+                    .push((method.to_owned(), path.to_owned()));
+                let (status, body) = match (method, path) {
+                    ("POST", "/app/installations/7/access_tokens") => (
+                        201,
+                        json!({"token":"offline-token","expires_at":"2030-01-01T00:00:00Z"}),
+                    ),
+                    ("GET", "/repos/org/repo") => (200, json!({"id":1})),
+                    ("DELETE", "/repos/org/repo/git/refs/heads/dvb%2Ftask") => {
+                        (422, json!({"message":"Reference does not exist"}))
+                    }
+                    ("GET", "/repos/org/repo/git/ref/heads/dvb%2Ftask") => {
+                        (read_status, json!({"message":"probe result"}))
+                    }
+                    other => panic!("unexpected request: {other:?}"),
+                };
+                std::future::ready(Ok::<_, std::convert::Infallible>(
+                    http::Response::builder()
+                        .status(status)
+                        .body(Full::new(Bytes::from(body.to_string())))
+                        .unwrap(),
+                ))
+            });
+            let app = octocrab::OctocrabBuilder::new_empty()
+                .with_service(service)
+                .with_auth(octocrab::AuthState::None)
+                .build()
+                .unwrap();
+            let forge = GitHub::with_app_client(
+                app,
+                7,
+                "org".into(),
+                GithubAccountType::Organization,
+                Arc::new(Wait::new(Arc::new(dvb_core::FakeClock::at(Timestamp(0))))),
+            )
+            .unwrap();
+            let result = forge
+                .delete_branch(&Repo("org/repo".into()), "dvb/task")
+                .await;
+            match expected {
+                Some((status, retryable)) => {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.retryable, retryable, "{error:?}");
+                    assert_eq!(error.detail, format!("GitHub HTTP {status}"));
+                }
+                None => result.unwrap(),
+            }
+            assert_eq!(calls.lock().unwrap().len(), 4);
+        }
+    }
+
     #[tokio::test]
     async fn publication_author_is_read_by_sha_with_the_repository_token_and_keeps_read_errors() {
         use bytes::Bytes;

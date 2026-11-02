@@ -57,6 +57,24 @@ pub struct Run {
 }
 
 impl Run {
+    pub(crate) fn view(&self) -> RunView {
+        RunView {
+            outcome: self.outcome.clone(),
+            id: self.assignment.run.clone(),
+            project: self.project.clone(),
+            task: self.assignment.task.clone(),
+            role: self.assignment.role.clone(),
+            hire: self.assignment.hire.clone(),
+            model: self.assignment.model.clone(),
+            vendor: self.assignment.vendor,
+            effort: self.assignment.effort,
+            reason: self.assignment.reason.clone(),
+            reviews: self.assignment.reviews.clone(),
+            started_at: self.started_at,
+            ended: self.ended.clone(),
+        }
+    }
+
     /// When its time limit runs out: counted from its launch (from its start
     /// for a run launched before `run.launched` existed).
     pub fn time_limit_at(&self) -> Timestamp {
@@ -150,21 +168,7 @@ impl Projections {
                 t.view.round_model = Some(r.assignment.model.clone());
                 t.view.routine |= r.assignment.routine;
             }
-            t.view.current_run = Some(RunView {
-                outcome: r.outcome.clone(),
-                id: r.assignment.run.clone(),
-                project: r.project.clone(),
-                task: r.assignment.task.clone(),
-                role: r.assignment.role.clone(),
-                hire: r.assignment.hire.clone(),
-                model: r.assignment.model.clone(),
-                vendor: r.assignment.vendor,
-                effort: r.assignment.effort,
-                reason: r.assignment.reason.clone(),
-                reviews: r.assignment.reviews.clone(),
-                started_at: r.started_at,
-                ended: r.ended.clone(),
-            });
+            t.view.current_run = Some(r.view());
         }
     }
 

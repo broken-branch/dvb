@@ -23,21 +23,7 @@ pub async fn get_run(
     let Some(r) = proj.runs.get(&id) else {
         return Err(Fail::NotFound(format!("run {id}")));
     };
-    let view = RunView {
-        outcome: r.outcome.clone(),
-        id: r.assignment.run.clone(),
-        project: r.project.clone(),
-        task: r.assignment.task.clone(),
-        role: r.assignment.role.clone(),
-        hire: r.assignment.hire.clone(),
-        model: r.assignment.model.clone(),
-        vendor: r.assignment.vendor,
-        effort: r.assignment.effort,
-        reason: r.assignment.reason.clone(),
-        reviews: r.assignment.reviews.clone(),
-        started_at: r.started_at,
-        ended: r.ended.clone(),
-    };
+    let view = r.view();
     drop(proj);
     Ok(Json(view))
 }

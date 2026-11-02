@@ -2,7 +2,7 @@
 use super::{
     Next,
     effects::pr_body,
-    runs::{builder_assignment, launch_run, preserved_workspace},
+    runs::{builder_assignment, preserved_workspace, start_run},
 };
 use crate::{
     AppState, Fail,
@@ -239,24 +239,7 @@ pub(super) async fn stopped(e: &AppState, t: &Task, p: &Project) -> Result<Next,
                 "Retry the completion check: {}",
                 t.view.outcome.reason().unwrap_or_default()
             );
-            let a = builder_assignment(e, p, t, reason).await?;
-            let from = preserved_workspace(e, &t.view.id, &a.base);
-            e.decide(
-                e.proj(),
-                &t.view.id,
-                Actor::Engine,
-                crate::Decision {
-                    pre: vec![EventKind::TaskRetryTextSet {
-                        task: t.view.id.clone(),
-                        text: Some(a.reason.clone()),
-                    }],
-                    ..crate::Decision::new("completion_recheck", Command::Resume(Some(a.clone())))
-                },
-                |_| Ok(()),
-            )?;
-            if e.proj().runs.contains_key(&a.run) {
-                launch_run(e, &a, from);
-            }
+            resume_builder(e, t, p, reason, "completion_recheck").await?;
         }
         Some(Answer::Choice(_)) | Some(Answer::Reply(_)) | None => {}
     }
@@ -299,10 +282,21 @@ async fn prerequisite_merged(
         "Task {title} ({blocker}), which this task was blocked on, has merged into {}. Bring it into your kept work and finish the task.",
         p.view.default_branch
     );
+    resume_builder(e, t, p, reason, "prerequisite_merged").await?;
+    Ok(Next::Idle)
+}
+
+async fn resume_builder(
+    e: &AppState,
+    t: &Task,
+    p: &Project,
+    reason: String,
+    name: &str,
+) -> Result<(), Fail> {
     let a = builder_assignment(e, p, t, reason).await?;
     let from = preserved_workspace(e, &t.view.id, &a.base);
-    e.decide(
-        e.proj(),
+    start_run(
+        e,
         &t.view.id,
         Actor::Engine,
         crate::Decision {
@@ -310,14 +304,13 @@ async fn prerequisite_merged(
                 task: t.view.id.clone(),
                 text: Some(a.reason.clone()),
             }],
-            ..crate::Decision::new("prerequisite_merged", Command::Resume(Some(a.clone())))
+            ..crate::Decision::new(name, Command::Resume(Some(a.clone())))
         },
+        &a,
+        from,
         |_| Ok(()),
     )?;
-    if e.proj().runs.contains_key(&a.run) {
-        launch_run(e, &a, from);
-    }
-    Ok(Next::Idle)
+    Ok(())
 }
 
 /// Disable every GitHub closing keyword, including cross-repository/URL
