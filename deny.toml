@@ -6,7 +6,9 @@ all-features = true
 [advisories]
 # Every advisory in the RustSec database fails the check; an exception is
 # added here with a reason when one is accepted.
-ignore = []
+ignore = [
+  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained with no safe upgrade and is pulled in by octocrab; drop this when a fixed release or octocrab's move off chrono lands" },
+]
 
 [licenses]
 allow = [

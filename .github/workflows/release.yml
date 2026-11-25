@@ -1,8 +1,10 @@
 # Releases: pushing a tag vX.Y.Z builds the binary with the app embedded,
 # assembles the release with scripts/release.sh, signs SHA256SUMS with minisign and
-# publishes a GitHub release. A pull request that touches the release files runs the
-# same build as a dry run with a throwaway key, to prove the signing and install
-# path; nothing is published from a pull request.
+# publishes a GitHub release, with dvb-bin-X.Y.Z-aur.tar.gz: the AUR package that
+# scripts/aur-render.sh renders from the signed files (not for prereleases). A pull
+# request that touches the release files runs the same build as a dry run with a
+# throwaway key, to prove the signing and install path; nothing is published from a
+# pull request. ci.yml renders the AUR package from fixture sums on every pull request.
 name: release
 on:
   push:
@@ -178,10 +180,23 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release
           path: rel
+      # The tarball's sum as signed in SHA256SUMS; SHA256SUMS, its signature and the
+      # tag's LICENSE as the release and raw.githubusercontent.com serve them.
+      - name: Render the AUR package from the signed release (not for prereleases)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: |
+          ver=${GITHUB_REF_NAME#v}
+          (cd rel && sha256sum -c --ignore-missing --quiet SHA256SUMS)
+          { cat rel/SHA256SUMS; (cd rel && sha256sum SHA256SUMS SHA256SUMS.minisig); sha256sum LICENSE; } > "$RUNNER_TEMP/aur.sums"
+          scripts/aur-render.sh "$ver" "$RUNNER_TEMP/aur.sums" "$RUNNER_TEMP/aur/dvb-bin-$ver"
+          tar -C "$RUNNER_TEMP/aur" -czf "rel/dvb-bin-$ver-aur.tar.gz" "dvb-bin-$ver"
       - name: Publish the release (hyphenated tags are prereleases)
         env:
           GH_TOKEN: ${{ github.token }}

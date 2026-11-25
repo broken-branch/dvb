@@ -36,6 +36,8 @@ def prepare(root, tmpfiles):
         '',
     ]))
     executable(stubs / 'chown', 'printf "%s\\n" "$*" >> "$DVB_TEST_ROOT/chown.log"\n')
+    executable(stubs / 'getent',
+               'printf "desktop:x:4242:4242::%s/home/desktop:/bin/sh\\n" "$DVB_TEST_ROOT"\n')
     executable(stubs / 'systemd-tmpfiles',
                'printf "%s\\n" "$*" >> "$DVB_TEST_TMPFILES_LOG"\n'
                'exec "$DVB_TEST_TMPFILES" --root="$DVB_TEST_ROOT" "$@"\n')
@@ -61,14 +63,12 @@ def prepare(root, tmpfiles):
     for file in ('dvb-desk.service', 'dvb.desktop'):
         shutil.copyfile(source / file, root / file)
     shutil.copytree(source / 'icons', root / 'icons')
-    paths = ['/opt/dvb', '/usr/local/bin/dvb', '/etc/systemd/user',
-             '/etc/systemd/system', '/etc/polkit-1/rules.d', '/var/lib', '/proc/meminfo', '/usr/local/bin/sccache',
-             '/usr/share/applications', '/usr/share/icons', '/etc/tmpfiles.d', '/usr/local/bin/claude',
-             '/usr/lib/polkit-1/polkitd', '/usr/libexec/polkitd']
+    paths = ['/opt/dvb', '/usr/local/bin/', '/usr/bin/', '/etc/', '/var/lib',
+             '/proc/meminfo', '/usr/share/', '/usr/lib/', '/usr/libexec/polkitd']
     for name in ('dvb-setup', 'install.sh'):
         text = (source / name).read_text()
         for path in paths:
-            text = text.replace(path, str(root / path.lstrip('/')))
+            text = text.replace(path, str(root) + path)
         (root / name).write_text(text)
     # Runs find none of the host's programs, so every runtime want is asked of pacman.
     runs_path = 'runs_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
@@ -95,6 +95,39 @@ def prepare(root, tmpfiles):
     return args, env, script, binary, text
 
 
+def check_packaged_install(tmpfiles):
+    cases = 0
+    with tempfile.TemporaryDirectory(prefix='dvb-packaged-install-') as temp:
+        root = Path(temp)
+        args, env, _, binary, _ = prepare(root, tmpfiles)
+        opt = root / 'opt/dvb'
+        (opt / 'versions/0.1.1').mkdir(parents=True)
+        (opt / 'packaged').touch()
+        shutil.copyfile(binary, opt / 'versions/0.1.1/dvb')
+        (opt / 'current').symlink_to('versions/0.1.1')
+
+        def snapshot():
+            return {p.relative_to(root): (
+                        p.readlink() if p.is_symlink() else p.read_bytes() if p.is_file() else None,
+                        p.lstat().st_mode, p.lstat().st_mtime_ns, p.lstat().st_ctime_ns)
+                    for p in [root, *root.rglob('*')]}
+
+        before = snapshot()
+        for options in (['--cockpit'], ['--engine'], ['--engine', '--cockpit'],
+                        ['--cockpit', '--engine-host', 'engine-host']):
+            result = subprocess.run(args + options, env=env, capture_output=True,
+                                    text=True, timeout=INSTALL_TIMEOUT)
+            cases += 1
+            assert result.returncode != 0, result
+            assert ('install.sh: dvb came from your package manager; '
+                    'update it with `yay -Syu dvb-bin`.') in result.stderr, result
+            assert 'To use install.sh, remove the package first' in result.stderr, result
+            assert ('https://github.com/broken-branch/dvb/blob/main/docs/install.md'
+                    '#remove-the-package') in result.stderr, result
+            assert snapshot() == before, 'packaged install changed the temporary tree'
+    return cases
+
+
 def check_local_cockpit(root, args, binary, env):
     cases = 0
     unit = root / 'etc/systemd/user/dvb-forward.service'
@@ -102,6 +135,7 @@ def check_local_cockpit(root, args, binary, env):
     result = subprocess.run(args + ['--cockpit'], env=env, capture_output=True, text=True, timeout=INSTALL_TIMEOUT)
     cases += 1
     assert result.returncode == 0, result.stderr
+    assert 'dvb-setup:' not in result.stderr, result
     assert not unit.exists() and not config.exists()
     assert not (root / 'tmpfiles.log').exists()
     hicolor = root / 'usr/share/icons/hicolor'
@@ -161,7 +195,7 @@ def check_remote_cockpit(root, args, env):
         lines = unit.read_text().splitlines()
         command = next(line for line in lines
                        if line.startswith('ExecStart='))
-        assert command.startswith('ExecStart=/usr/bin/ssh -N ')
+        assert command.startswith(f'ExecStart={root}/usr/bin/ssh -N ')
         for option in ('BatchMode=yes', 'ExitOnForwardFailure=yes',
                        'ServerAliveInterval=30', 'StreamLocalBindUnlink=yes'):
             assert f'-o {option}' in command
@@ -497,6 +531,7 @@ def check_engine_paths(tmpfiles):
                                     text=True, timeout=INSTALL_TIMEOUT)
             cases += 1
             assert result.returncode == 0, result.stderr
+            assert 'dvb-setup:' not in result.stderr, result
             assert data.is_dir()
             made_subvolume = filesystem == 'btrfs' and not existing and btrfs
             log = root / 'btrfs.log'
@@ -515,6 +550,100 @@ def check_engine_paths(tmpfiles):
                 assert stat.S_IMODE(slice_file.stat().st_mode) == 0o644
             drop_in = (root / 'etc/systemd/system/dvb-run-.service.d/10-common.conf').read_text()
             assert 'Slice=dvb.slice' in drop_in and 'MemoryMax=8G' in drop_in
+    return cases
+
+
+def check_setup_shadows(root, setup, env, names):
+    cases = 0
+    marker = root / 'opt/dvb/packaged'
+    local = root / 'usr/local/bin'
+    packaged = root / 'usr/bin'
+    packaged.mkdir(exist_ok=True)
+    # Each regression pairs the warning with its three exclusion conditions.
+    for is_packaged, leftover, package_binary in ((True, False, True), (True, True, False),
+                                                  (False, True, True), (True, True, True)):
+        marker.unlink(missing_ok=True)
+        if is_packaged:
+            marker.touch()
+        for name in names:
+            (local / name).unlink(missing_ok=True)
+            (packaged / name).unlink(missing_ok=True)
+            if leftover:
+                if name == 'dvb':
+                    (local / name).symlink_to(root / 'opt/dvb/current/dvb')
+                else:
+                    executable(local / name, 'exit 99\n')
+            if package_binary:
+                executable(packaged / name, 'exit 99\n')
+        binaries = [directory / name for directory in (local, packaged) for name in names]
+        before = {file: file.read_bytes() for file in binaries if file.exists()}
+        result = subprocess.run(setup + ['--cockpit', '--owner', 'desktop'], env=env,
+                                capture_output=True, text=True, timeout=INSTALL_TIMEOUT)
+        cases += 1
+        assert result.returncode == 0, result
+        warnings = [f'dvb-setup: warning: {local / name} shadows {packaged / name}; '
+                    f'run: sudo rm -f {local / name}' for name in names
+                    if is_packaged and leftover and package_binary]
+        assert result.stderr.splitlines() == warnings, (names, warnings, result)
+        assert 'dvb-setup: warning:' not in result.stdout, result
+        assert before == {file: file.read_bytes() for file in binaries if file.exists()}
+        if leftover and 'dvb' in names:
+            assert (local / 'dvb').readlink() == root / 'opt/dvb/current/dvb'
+        assert 'cockpit installed and started for desktop' in result.stdout, result
+    for file in binaries:
+        file.unlink()
+    return cases
+
+
+def check_setup_overrides(root, setup, env, paths):
+    cases = 0
+    marker = root / 'opt/dvb/packaged'
+    files = [root / name for pair in paths for name in pair]
+
+    def snapshot():
+        return {file: (file.read_bytes() if file.is_file() else None,
+                       file.stat().st_mode, file.stat().st_mtime_ns)
+                for tree in files for file in (tree, *tree.rglob('*')) if file.exists()}
+
+    for is_packaged, leftover, package_file in ((True, False, True), (True, True, False),
+                                               (False, True, True), (True, True, True)):
+        marker.unlink(missing_ok=True)
+        if is_packaged:
+            marker.touch()
+        for local, packaged in paths:
+            for name, present in ((local, leftover), (packaged, package_file)):
+                file = root / name
+                if file.is_dir():
+                    shutil.rmtree(file)
+                else:
+                    file.unlink(missing_ok=True)
+                if present:
+                    file.parent.mkdir(parents=True, exist_ok=True)
+                    if file.name == 'dvb-run-.service.d':
+                        file.mkdir()
+                        file /= '10-common.conf'
+                    file.write_text(f'keep {name}\n')
+        before = snapshot()
+        result = subprocess.run(setup + ['--cockpit', '--owner', 'desktop'], env=env,
+                                capture_output=True, text=True, timeout=INSTALL_TIMEOUT)
+        cases += 1
+        assert result.returncode == 0, result
+        warnings = []
+        if is_packaged and leftover and package_file:
+            for local, packaged in paths:
+                remove = '-rf' if local.endswith('dvb-run-.service.d') else '-f'
+                warnings.append(f'dvb-setup: warning: {root / local} shadows {root / packaged}; '
+                                f'run: sudo rm {remove} {root / local}')
+            warnings.append('dvb-setup: after removing these files, run: sudo systemctl daemon-reload')
+        assert result.stderr.splitlines() == warnings, (paths, warnings, result)
+        assert 'dvb-setup:' not in result.stdout, result
+        assert snapshot() == before
+        assert 'cockpit installed and started for desktop' in result.stdout, result
+    for file in files:
+        if file.is_dir():
+            shutil.rmtree(file)
+        else:
+            file.unlink()
     return cases
 
 
@@ -648,6 +777,36 @@ def check_packaged_setup(tmpfiles):
             cases += 1
             assert result.returncode != 0, result
             assert snapshot(root) == before
+
+        for names in (('claude',), ('dvb',), ('sccache',), ('claude', 'dvb', 'sccache')):
+            cases += check_setup_shadows(root, setup, env, names)
+
+        overrides = [
+            (f'etc/systemd/system/{name}', f'usr/lib/systemd/system/{name}')
+            for name in ('dvb.service', 'dvb.socket', 'dvb-run.socket',
+                         'dvb-run-claude@.service', 'dvb-run-codex@.service',
+                         'dvb-run-fake@.service', 'dvb-run-.service.d')
+        ] + [
+            ('etc/polkit-1/rules.d/50-dvb.rules', 'usr/share/polkit-1/rules.d/50-dvb.rules'),
+            ('etc/systemd/user/dvb-desk.service', 'usr/lib/systemd/user/dvb-desk.service'),
+        ]
+        for paths in [[pair] for pair in overrides] + [overrides]:
+            cases += check_setup_overrides(root, setup, env, paths)
+
+        # Slice limits are deliberate overrides, not stale installer files.
+        for name in ('system/dvb.slice', 'system.control/dvb.slice.d/50-MemoryMax.conf'):
+            file = root / 'etc/systemd' / name
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text('[Slice]\nMemoryMax=8G\n')
+        (opt / 'packaged').touch()
+        before = snapshot(root / 'etc/systemd/system', root / 'etc/systemd/system.control')
+        result = subprocess.run(setup + ['--cockpit', '--owner', 'desktop'], env=env,
+                                capture_output=True, text=True, timeout=INSTALL_TIMEOUT)
+        cases += 1
+        assert result.returncode == 0, result
+        assert result.stderr == '', result
+        assert 'dvb-setup:' not in result.stdout, result
+        assert snapshot(root / 'etc/systemd/system', root / 'etc/systemd/system.control') == before
     return cases
 
 
@@ -699,6 +858,7 @@ def main():
         cases += check_signing_key(root, script, text, env)
     cases += check_rustup(tmpfiles)
     cases += check_engine_paths(tmpfiles)
+    cases += check_packaged_install(tmpfiles)
     cases += check_packaged_setup(tmpfiles)
     cases += check_release_workflow()
     print(f'Installer: {cases} cases passed; all writes stayed in the temporary tree.')

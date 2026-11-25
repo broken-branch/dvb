@@ -17,6 +17,10 @@ src=$1 out=$2
 if [[ -e $out && -n $(ls -A "$out") ]]; then echo "public-copy: $out is not empty" >&2; exit 2; fi
 mkdir -p "$out"
 cp -a "$src/." "$out/"
+# The copy carries packaging/aur/dvb-bin/PKGBUILD.in, never a rendered package: this
+# repository's PKGBUILD and .SRCINFO pin an old release. scripts/aur-render.sh renders
+# the package once the tag's release is signed.
+rm -f "$out/packaging/aur/dvb-bin/PKGBUILD" "$out/packaging/aur/dvb-bin/.SRCINFO"
 { grep -rlIZxF -e "$private_line" -- "$out" || (( $? == 1 )); } | xargs -0r rm -f --
 names=$({ grep -rIoF -e "$private_repo" -- "$out" || (( $? == 1 )); } | wc -l)
 named=$({ grep -rlIF -e "$private_repo" -- "$out" || (( $? == 1 )); } | wc -l)

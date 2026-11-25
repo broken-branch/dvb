@@ -50,6 +50,7 @@ PYTESTS
   cargo nextest run --locked --workspace
   cargo deny --locked check
   python3 scripts/test-install.py
+  python3 scripts/test-aur-hooks.py
 }
 contracts_checks() {
   local before_status before_diff

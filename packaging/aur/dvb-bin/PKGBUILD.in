@@ -1,13 +1,13 @@
 # Maintainer: <who publishes it on the AUR, still to be decided>
 #
-# Requires a release with packaged updates and install/dvb-setup; bump pkgver
-# and checksums before publishing to the AUR.
+# Rendered by dvb's scripts/aur-render.sh from PKGBUILD.in and the sums of the
+# signed release; edit the template, not this file.
 # Packages dvb's signed release instead of running install.sh:
 # pacman installs files, sysusers/tmpfiles hooks make the users and folders,
 # and the owner turns dvb on with one command after install (see dvb-bin.install).
 
 pkgname=dvb-bin
-pkgver=0.1.82
+pkgver=@PKGVER@
 pkgrel=1
 pkgdesc="dvb, an autonomous coding-agent system for one owner (engine service and desktop cockpit; not DVB television)"
 arch=('x86_64')
@@ -35,14 +35,8 @@ source=("dvb-${pkgver}-x86_64-linux.tar.gz::${_rel}/dvb-${pkgver}-x86_64-linux.t
         'dvb.sysusers'
         'dvb.tmpfiles'
         'dvb.slice')
-# Pinned for v0.1.82. Run `updpkgsums` after any edit or version bump.
-sha256sums=('fc83fb1e2ff5415a30e8293ae1a52a9b729f1b0fb3346cb4913edbf370676ae1'
-            '4b5864051c2b7e4864690088ad9f8e7666c042fce43e0fd492e66331025ea1d0'
-            '955764d353284655013a81fcdc2ffef25d07edac6d314e47f8cce0b53c5e41d8'
-            '266fa3e145a1a9af0bc95f1aa753a62d9cbd93814bda9e1455e38ca28e731cda'
-            '9615150dbfc714b0dd35ac47123bf69034733ce7846c0e7a5c105b56484961b5'
-            'b1c143306162466cd84fef53f1c2dd373be0b4d661d12c6b7f7eff2136f4ce26'
-            '1403ea9e9f5d0004892680504958ec28a5ed4599b1681165bebe1a9de6418932')
+# Pinned for v@PKGVER@.
+sha256sums=(@SHA256SUMS@)
 noextract=()
 
 # dvb's release key (crates/dvb-engine/src/update/release.pub).

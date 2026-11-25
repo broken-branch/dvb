@@ -32,6 +32,39 @@ account with the dvb authors.
 
 **Status:** pre-1.0. Commands, settings and the app may change between releases.
 
+## How it works
+
+dvb separates decisions about a task from the processes and network operations
+that carry them out. The core state machine decides which commands are allowed
+and which events they record. The engine stores events in SQLite, keeps the
+project, goal, task and run views used by the CLI and cockpit, and derives the
+work to do (pushes, pull requests, merges) from each task's state.
+
+| Component | Responsibility |
+| --- | --- |
+| [`dvb-core`](crates/dvb-core/src/state/mod.rs) | Task states, command decisions and the shared event and effect types. |
+| [`dvb-store`](crates/dvb-store/src/lib.rs) | The append-only SQLite event log, transactional batches, migrations and database snapshots. |
+| [`dvb-engine`](crates/dvb-engine/src/dispatch/mod.rs) | Scheduling, worker and reviewer assignments, publication, CI checks, merge and recovery. |
+| [`dvb-run`](crates/dvb-run/src/exec.rs) | Running the provider CLI for an assigned run. |
+| [`dvb-forge`, `dvb-cli`, `dvb-desk`](docs/map/forge.md) | GitHub access, owner commands, and the desktop service that serves the cockpit. |
+
+On startup, the engine rebuilds its in-memory views from the event log and
+reconciles interrupted work. The store uses SQLite WAL and serializes writes
+through one connection. An event records what dvb knows; external work such as
+a GitHub merge still has to be reconciled when its reply is lost.
+
+The [merge path](crates/dvb-engine/src/dispatch/merge.rs) checks that the
+pull request targets the default branch, that a clean review exists for its
+current head, and that the review comes from the accountable reviewer. For
+projects with expected CI checks, it reads those checks again just before
+merging; a project added with `--no-ci` skips that gate. A branch behind the
+default branch is brought up to date first, and a changed PR head sends the
+task back to review.
+
+If a merge reply was lost, dvb reads the PR's state before sending another
+merge request. The [code maps](docs/map/README.md) trace these boundaries in
+more detail.
+
 ## Quick start
 
 This takes you from nothing to a first merged pull request. It works on a
@@ -192,6 +225,30 @@ sha256sum -c --ignore-missing SHA256SUMS
   prints the link that opens it.
 
 Update with `dvb update`. To remove dvb, see [Remove dvb](docs/install.md#remove-dvb).
+
+## Verification and limits
+
+The repository tests workflow invariants at several levels:
+
+| Evidence in the repository | What it is designed to check |
+| --- | --- |
+| [State-machine model tests](crates/dvb-core/src/state/model.rs) | Random sequences of work, stop, resume, cancel, pause, crash and retry, checked against the state invariants. |
+| [Crash/restart tests](crates/dvb/tests/crash.rs) | Recovery when the engine dies after a worker starts, a push, a PR opening or a merge, before the result was recorded. |
+| [Fake-provider acceptance](scripts/run-e2e.sh) | One task through plan approval, worker run, review and merge, checked through the CLI and the event log. |
+| [CI](.github/workflows/ci.yml) | Rust and UI checks, contract regeneration, and acceptance and upgrade checks on a real install. |
+
+The [testing guide](docs/testing.md) lists tool versions, prerequisites and the
+development acceptance command, `scripts/run-e2e.sh --dev --no-browser`. That
+command expects a Git checkout and a built `dvb` binary. Installed acceptance
+needs a disposable systemd/polkit install. Real-provider checks are separate,
+opt-in runs that need a configured project and use model usage.
+
+Fake-provider tests check the orchestration, not how often a live model solves
+a coding task correctly. A review or green CI result is only as strong as the
+review and checks applied to that change. dvb is pre-1.0, runs locally on the
+Linux setup above, and can merge work reviewed only by AI reviewers. The
+[installation guide](docs/install.md) describes the permissions, resources and
+GitHub changes involved.
 
 ## More
 

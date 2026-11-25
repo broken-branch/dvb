@@ -37,6 +37,35 @@ if [ -n "$engine_host" ]; then
   [ "$cockpit" = 1 ] || die "--engine-host requires --cockpit"
 fi
 
+if [ -e /opt/dvb/packaged ]; then
+  for binary in claude dvb sccache; do
+    if [ -e "/usr/local/bin/$binary" ] && [ -e "/usr/bin/$binary" ]; then
+      echo "dvb-setup: warning: /usr/local/bin/$binary shadows /usr/bin/$binary; run: sudo rm -f /usr/local/bin/$binary" >&2
+    fi
+  done
+  overrides=0
+  # dvb.slice and its system.control drop-ins are the owner's overrides.
+  for file in /etc/systemd/system/dvb.service /etc/systemd/system/dvb.socket \
+    /etc/systemd/system/dvb-run.socket /etc/systemd/system/dvb-run-claude@.service \
+    /etc/systemd/system/dvb-run-codex@.service /etc/systemd/system/dvb-run-fake@.service \
+    /etc/systemd/system/dvb-run-.service.d /etc/polkit-1/rules.d/50-dvb.rules \
+    /etc/systemd/user/dvb-desk.service; do
+    case "$file" in
+      /etc/polkit-1/*) packaged="/usr/share/${file#/etc/}" ;;
+      *) packaged="/usr/lib/${file#/etc/}" ;;
+    esac
+    if [ -e "$file" ] && [ -e "$packaged" ]; then
+      remove=-f
+      [ "$file" != /etc/systemd/system/dvb-run-.service.d ] || remove=-rf
+      echo "dvb-setup: warning: $file shadows $packaged; run: sudo rm $remove $file" >&2
+      overrides=1
+    fi
+  done
+  if [ "$overrides" = 1 ]; then
+    echo "dvb-setup: after removing these files, run: sudo systemctl daemon-reload" >&2
+  fi
+fi
+
 if [ "$engine" = 1 ]; then
   # Installing over a running install (the way to move to a release that cannot
   # update itself): stop the engine, keep a copy of its database first. The copy

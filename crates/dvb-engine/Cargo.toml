@@ -49,7 +49,7 @@ dvb-cli = { version = "0.1.0", path = "../dvb-cli" }
 dvb-run = { version = "0.1.0", path = "../dvb-run" }
 futures-util = "0.3.34"
 minisign = "0.10.0"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde_json = "1.0.154"
 tempfile = "3.27.0"
 tokio = { version = "1.53.3", features = ["macros", "rt", "test-util"] }

@@ -53,6 +53,11 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+if [ -e /opt/dvb/packaged ]; then
+  die "dvb came from your package manager; update it with \`yay -Syu dvb-bin\`." \
+    'To use install.sh, remove the package first; see https://github.com/broken-branch/dvb/blob/main/docs/install.md#remove-the-package.'
+fi
+
 if [ -n "$engine_host" ]; then
   [ "$engine" = 0 ] || die "--engine-host cannot be used with --engine"
   [ "$cockpit" = 1 ] || die "--engine-host requires --cockpit"
